@@ -1,5 +1,4 @@
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 from src.models.review import Review
@@ -7,23 +6,33 @@ from src.models.review import Review
 OUTPUT_DIR = Path("output")
 
 
-def output_path(asin: str) -> Path:
-    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-    return OUTPUT_DIR / f"{asin}_{ts}.json"
-
-
-def latest_output(asin: str) -> Path | None:
-    """Return the most recent output file for a given ASIN, or None."""
-    files = sorted(OUTPUT_DIR.glob(f"{asin}_*.json"), reverse=True)
-    return files[0] if files else None
-
-
-def save_reviews(reviews: list[Review], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = [r.model_dump(mode="json") for r in reviews]
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+def asin_path(asin: str) -> Path:
+    return OUTPUT_DIR / f"{asin}.json"
 
 
 def load_reviews(path: Path) -> list[Review]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     return [Review.model_validate(r) for r in payload]
+
+
+def save_reviews(reviews: list[Review], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps([r.model_dump(mode="json") for r in reviews], indent=2),
+        encoding="utf-8",
+    )
+
+
+def upsert_reviews(new_reviews: list[Review], asin: str) -> tuple[int, int]:
+    """Merge new_reviews into the existing file for asin, deduplicating by review_id.
+
+    Returns (added, total) — how many were new vs. the total after merge.
+    """
+    path = asin_path(asin)
+    existing = load_reviews(path) if path.exists() else []
+
+    existing_ids = {r.review_id for r in existing}
+    to_add = [r for r in new_reviews if r.review_id not in existing_ids]
+
+    save_reviews(existing + to_add, path)
+    return len(to_add), len(existing) + len(to_add)

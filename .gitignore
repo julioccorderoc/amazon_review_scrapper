@@ -13,3 +13,6 @@ wheels/
 raw_reviews/
 output/
 data/
+
+# others
+.DS_Store

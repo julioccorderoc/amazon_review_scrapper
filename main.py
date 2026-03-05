@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from src.parsers.html_parser import parse_file
-from src.storage.json_storage import latest_output, load_reviews, output_path, save_reviews
+from src.storage.json_storage import asin_path, load_reviews, upsert_reviews
 
 RAW_DIR = Path("raw_reviews")
 
@@ -30,16 +30,15 @@ def cmd_parse(args: argparse.Namespace) -> None:
         print(f"  parsed {path.name}  → {len(reviews)} reviews")
 
     for asin, reviews in by_asin.items():
-        unique = _dedup(reviews)
-        path = output_path(asin)
-        save_reviews(unique, path)
-        print(f"  saved  {len(unique)} reviews → {path}")
+        added, total = upsert_reviews(reviews, asin)
+        path = asin_path(asin)
+        print(f"  saved  {added} new reviews → {path}  (total: {total})")
 
 
 def cmd_show(args: argparse.Namespace) -> None:
     asin = args.asin.upper()
-    path = latest_output(asin)
-    if not path:
+    path = asin_path(asin)
+    if not path.exists():
         print(f"No output found for ASIN {asin}. Run `parse` first.")
         return
 
@@ -58,25 +57,40 @@ def cmd_show(args: argparse.Namespace) -> None:
         print(f"  {stars}★  {bar} {count}")
 
 
+def cmd_list(_args: argparse.Namespace) -> None:
+    output_dir = Path("output")
+    files = sorted(output_dir.glob("*.json")) if output_dir.exists() else []
+
+    if not files:
+        print("No products found. Run `parse` first.")
+        return
+
+    print(f"\n{'ASIN':<15} {'Reviews':>7}  File")
+    print("-" * 45)
+    for f in files:
+        asin = f.stem
+        try:
+            reviews = load_reviews(f)
+            breakdown = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+            for r in reviews:
+                breakdown[round(r.rating)] += 1
+            stars_str = "  ".join(
+                f"{s}★:{breakdown[s]}" for s in range(5, 0, -1) if breakdown[s]
+            )
+            print(f"{asin:<15} {len(reviews):>7}  {stars_str}")
+        except Exception:
+            print(f"{asin:<15}  (unreadable)")
+
+
 def cmd_export(args: argparse.Namespace) -> None:
     asin = args.asin.upper()
-    path = latest_output(asin)
-    if not path:
+    path = asin_path(asin)
+    if not path.exists():
         print(f"No output found for ASIN {asin}. Run `parse` first.", file=sys.stderr)
         sys.exit(1)
 
     for review in load_reviews(path):
         print(review.model_dump_json())
-
-
-def _dedup(reviews: list) -> list:
-    seen: set[str] = set()
-    unique = []
-    for r in reviews:
-        if r.review_id not in seen:
-            seen.add(r.review_id)
-            unique.append(r)
-    return unique
 
 
 def main() -> None:
@@ -93,6 +107,9 @@ def main() -> None:
     p_show = sub.add_parser("show", help="Print a summary for a product")
     p_show.add_argument("--asin", required=True, metavar="ASIN")
     p_show.set_defaults(func=cmd_show)
+
+    p_list = sub.add_parser("list", help="List all products with review counts")
+    p_list.set_defaults(func=cmd_list)
 
     p_export = sub.add_parser("export", help="Dump reviews as JSONL (stdout)")
     p_export.add_argument("--asin", required=True, metavar="ASIN")
