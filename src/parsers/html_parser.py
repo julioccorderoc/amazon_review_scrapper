@@ -13,7 +13,7 @@ _ASIN_RE = re.compile(r"/product-reviews/([A-Z0-9]{10})")
 _ASIN_FILENAME_RE = re.compile(r"^([A-Z0-9]{10})[^A-Z0-9]")
 
 # Matches: "637 people found this helpful" or "One person found this helpful"
-_HELPFUL_RE = re.compile(r"^(\d+|[Oo]ne)\s+people?\s+found", re.IGNORECASE)
+_HELPFUL_RE = re.compile(r"^(\d+|[Oo]ne)\s+(?:people?|person)\s+found", re.IGNORECASE)
 
 # Matches: "Reviewed in United States on October 25, 2023"
 _DATE_RE = re.compile(r"Reviewed in (.+?) on (.+)")
