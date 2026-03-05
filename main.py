@@ -9,7 +9,7 @@ RAW_DIR = Path("raw_reviews")
 
 
 def cmd_parse(args: argparse.Namespace) -> None:
-    files = [Path(args.file)] if args.file else sorted(RAW_DIR.glob("*-page.html"))
+    files = [Path(args.file)] if args.file else sorted(RAW_DIR.glob("*.html"))
 
     if not files:
         print("No HTML files found.")
@@ -22,7 +22,10 @@ def cmd_parse(args: argparse.Namespace) -> None:
         except ValueError as e:
             print(f"  error  {path.name}: {e}", file=sys.stderr)
             continue
-        asin = reviews[0].asin if reviews else path.name.split("_")[0]
+        asin = reviews[0].asin if reviews else None
+        if not asin:
+            print(f"  skip   {path.name}: no reviews extracted", file=sys.stderr)
+            continue
         by_asin.setdefault(asin, []).extend(reviews)
         print(f"  parsed {path.name}  → {len(reviews)} reviews")
 

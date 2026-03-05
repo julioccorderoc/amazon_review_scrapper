@@ -26,7 +26,7 @@
 
 ### EPIC-002 — Phase 1: HTML Parser, Storage & CLI
 
-* **Status:** `Active`
+* **Status:** `Complete`
 * **Dependencies:** EPIC-001
 * **Business Objective:** Enable the user to drop manually-saved Amazon review HTML files into `raw_reviews/` and run a single command to produce clean, structured data ready for LLM analysis.
 * **Technical Boundary:** `src/parsers/html_parser.py` (BeautifulSoup extraction), `src/storage/json_storage.py` (read/write `ReviewsDB`), and `main.py` CLI (`parse`, `show`, `export` subcommands). No network calls; all input is local files only.
@@ -39,7 +39,7 @@
 
 ### EPIC-003 — Phase 2: Browser Extension + Local Ingest Server
 
-* **Status:** `Pending`
+* **Status:** `Active`
 * **Dependencies:** EPIC-002
 * **Business Objective:** Remove the manual save step entirely. The user installs a local Chrome/Edge extension that automatically captures Amazon review pages as they are browsed and sends them to a local server, which feeds the existing Phase 1 parser.
 * **Technical Boundary:** A Chrome Manifest V3 extension (`src/extension/`) that detects Amazon review pages and POSTs the review list HTML to a local `fastapi` server (`src/phase2/server.py`). The server saves the payload as a raw HTML file in `raw_reviews/` (preserving the naming convention) and immediately triggers the Phase 1 parser. No changes to `src/models/` or `src/parsers/`.
