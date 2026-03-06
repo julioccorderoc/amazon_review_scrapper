@@ -220,51 +220,56 @@
 
 ### EPIC-014 — Modularize Extension: files: Injection + ES Modules
 
-* **Status:** `Pending`
+* **Status:** `Complete`
 * **Dependencies:** EPIC-013
-* **Business Objective:** Make the extension codebase maintainable. The current `background.js` is a single 600-line file mixing tab management, icon drawing, scrape orchestration, review extraction, and Chrome event wiring. Separating concerns makes each piece readable, independently changeable, and testable.
+* **Business Objective:** Make the extension codebase maintainable. The original `background.js` was a single 600-line file mixing tab management, icon drawing, scrape orchestration, review extraction, and Chrome event wiring. Separating concerns makes each piece readable, independently changeable, and testable.
 * **Technical Boundary:** `src/extension/` only. No Python changes. No user-visible behaviour changes.
-* **Planned deliverables:**
-  * Add `"type": "module"` to the background service worker declaration in `manifest.json` so `background.js` can use `import`/`export`.
-  * Split background.js into ES modules:
-    * `tab-utils.js` — `openTabAndLoad`, `clickNextPage`, `waitForReviewsToChange`, `waitForReviewsToAppear`
+* **What was done:**
+  * `manifest.json`: added `"type": "module"` to the background service worker declaration.
+  * Split `background.js` into ES modules:
+    * `tab-utils.js` — `sleep`, `jitter`, `openTabAndLoad`, `clickNextPage`, `waitForReviewsToChange`, `waitForReviewsToAppear`
     * `icons.js` — `drawTabIcon`, `setTabIcon`
-    * `scraper.js` — `startScrape`, `extractAsin`
-    * `background.js` — Chrome event listeners only; imports from the above
-  * Move the review extractor out of the inline `func:` string into `review-extractor.js` (a standalone content script). Switch `extractReviews` from `func:` to `files: ["review-extractor.js"]` injection. The file must assign its result to a well-known global or use `chrome.runtime.sendMessage` — whichever `executeScript` + `files:` requires.
-  * `review-extractor.js` exports nothing at the module level (it runs as a content script); its logic is fully self-contained.
+    * `extractor.js` — `extractReviews` (using `files:` injection), `extractHtml` (debug)
+    * `scraper.js` — `extractAsin`, `startScrape`
+    * `background.js` — Chrome event listeners only; 27 lines; imports from the above
+  * Moved the review extractor out of the inline `func:` arrow into `review-extractor.js` (a self-contained IIFE content script). `extractReviews` switched from `func:` to `files: ["review-extractor.js"]`. The IIFE's return value is what `executeScript` resolves with — no global assignment or messaging needed.
+  * Bonus: locale data (`DATE_PATTERNS`, `HELPFUL_PATTERNS`, month maps) hoisted to IIFE top level instead of being re-created on every loop iteration.
 * **Verification Criteria (Definition of Done):**
-  * Extension loads in Chrome without errors after the split.
-  * Full English scrape produces identical output to pre-split (same fields, same counts).
-  * Full Spanish scrape (Chrome UI set to Spanish) produces correct `rating`, `date`, `country`, `helpful_votes`.
-  * `uv run pytest` — all 21 tests still pass.
+  * Extension loads in Chrome without errors — confirmed (tested on macOS and Windows).
+  * Full English scrape produces identical output — confirmed.
+  * Full Spanish scrape produces correct `rating`, `date`, `country`, `helpful_votes` — confirmed.
+  * `uv run pytest` — all 21 tests pass — confirmed.
 
 ---
 
 ### EPIC-015 — JS Test Suite for review-extractor.js
 
-* **Status:** `Pending`
+* **Status:** `Complete`
 * **Dependencies:** EPIC-014
-* **Business Objective:** Give the JS extractor the same regression safety net the Python parser has. Currently every locale fix requires a manual reload-and-check cycle. Automated tests catch regressions in seconds.
-* **Technical Boundary:** New `tests/js/` directory. No changes to Python code or extension runtime behaviour.
-* **Planned deliverables:**
-  * Add Jest + jsdom as dev dependencies (`package.json`).
-  * Create `tests/js/fixtures/` with minimal HTML files mirroring `tests/fixtures/` for the Python suite — at minimum: English review page, Spanish review page (using `spanish_page.html` as the source of truth).
-  * Write `tests/js/review-extractor.test.js` covering:
-    * Standard English review — all 10 fields correct
-    * Spanish review — `rating`, `date`, `country`, `helpful_votes` all correct
-    * Rating CSS class fallback (no `span.a-icon-alt`)
-    * `helpful_votes` = 0 when element absent
-    * `helpful_votes` > 0 for each supported locale pattern
-    * `hasCaptcha` detection
-    * `isWrongPage` detection
-    * No `review_id` → review skipped
-    * No `reviewer_name` → review skipped
-  * `npm test` passes with zero failures.
+* **Business Objective:** Give the JS extractor the same regression safety net the Python parser has. Every locale fix is now verified automatically in milliseconds instead of requiring a manual reload-and-check cycle.
+* **Technical Boundary:** New `tests/js/` directory and `package.json`. No changes to Python code or extension runtime behaviour.
+* **What was done:**
+  * Added `package.json` with Jest ^29 and jsdom ^24 as dev dependencies. `npm test` runs the suite.
+  * Test approach: each test creates a `JSDOM` instance from a fixture file, calls `dom.window.eval(SCRIPT)` (where `SCRIPT` is the `review-extractor.js` source), and asserts on the returned object. No Chrome APIs needed.
+  * One fix required in `review-extractor.js`: changed `bodyEl.innerText.trim()` to `(bodyEl.innerText ?? bodyEl.textContent).trim()` — jsdom does not implement `innerText` (it requires CSS layout); real browsers always have it, so production behaviour is unchanged.
+  * Created `tests/js/fixtures/` (9 HTML files) and `tests/js/review-extractor.test.js` (34 tests across 9 describe blocks):
+
+    | Fixture | Covers |
+    | --- | --- |
+    | `en_standard.html` | All 10 fields, English, verified purchase, helpful votes |
+    | `es_standard.html` | Spanish: `Calificado` date verb, `3.0 de 5 estrellas` rating, `A 4 personas` votes |
+    | `en_css_rating_fallback.html` | Rating from `a-star-4` CSS class when `span.a-icon-alt` absent |
+    | `en_no_helpful.html` | `helpful_votes = 0` when element missing |
+    | `en_helpful_one.html` | `"One person found this helpful"` → `1` |
+    | `es_helpful_una.html` | `"A una persona le resultó útil"` → `1` |
+    | `captcha.html` | `hasCaptcha` detection |
+    | `no_review_id.html` | `li` with no `id` → review skipped |
+    | `no_reviewer_name.html` | No `.a-profile-name` → review skipped |
+
 * **Verification Criteria (Definition of Done):**
-  * `npm test` runs the JS suite; zero failures.
-  * `uv run pytest` still passes (Python suite unchanged).
-  * Adding a new HTML fixture + test case for a new locale is a self-contained change in `tests/js/`.
+  * `npm test` — 34 tests, 0 failures — confirmed (macOS and Windows).
+  * `uv run pytest` — all 21 Python tests pass — confirmed.
+  * Adding a new locale's tests = one new fixture file + one new `describe` block.
 
 ---
 
