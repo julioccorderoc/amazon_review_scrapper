@@ -15,6 +15,10 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function jitter(minMs, maxMs) {
+  return sleep(minMs + Math.random() * (maxMs - minMs));
+}
+
 function extractAsin(url) {
   if (!url) return null;
   let m = url.match(/\/dp\/([A-Z0-9]{10})/);
@@ -207,9 +211,12 @@ async function startScrape(url, tabId) {
   let totalAdded = 0;
   let lastTotal = 0;
   let captchaError = null;
+  let firstStar = true;
 
   try {
     for (const star of starsToScrape) {
+      if (!firstStar) await jitter(1000, 3000);
+      firstStar = false;
       if (captchaError) break;
 
       // One tab per star filter. Amazon loads reviews via AJAX when "Next" is clicked,

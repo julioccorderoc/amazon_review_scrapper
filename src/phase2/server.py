@@ -11,6 +11,11 @@ logger = logging.getLogger("ars.ingest")
 app = FastAPI(title="Amazon Review Ingest Server")
 
 
+@app.get("/health")
+async def health() -> dict:
+    return {"ok": True}
+
+
 @app.post("/ingest")
 async def ingest(request: Request) -> dict:
     """Receive raw Amazon review page HTML, parse it, and upsert into storage.
