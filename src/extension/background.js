@@ -5,12 +5,11 @@
 const SERVER = "http://localhost:8765";
 const STARS = ["one", "two", "three", "four", "five"];
 const DEFAULT_MAX_PAGES = 5;
-// How long to wait after a tab loads (or after clicking "Next") for Amazon's
-// AJAX to finish rendering the correct page's reviews into the DOM.
+// How long to wait after a tab loads for Amazon's JS to render page 1's reviews.
 // Amazon always embeds page 1 in the initial static HTML; subsequent pages are
 // loaded asynchronously when the user clicks "Next" — so we simulate that click
-// and wait for the DOM update rather than navigating to ?pageNumber=N directly.
-const TAB_SETTLE_MS = 3000;
+// and poll the DOM for the first review ID change rather than using a fixed delay.
+const TAB_SETTLE_MS = 1500; // page-1 initial settle only; pages 2+ use DOM polling
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -51,46 +50,95 @@ function openTabAndLoad(url) {
 }
 
 // Extract the current HTML and URL from an open tab via content script injection.
+// Retries once (after 2 s) if executeScript fails.
 function extractHtml(tabId) {
   return new Promise((resolve, reject) => {
-    chrome.scripting.executeScript(
-      {
-        target: { tabId },
-        func: () => ({ url: window.location.href, html: document.documentElement.outerHTML }),
-      },
-      (results) => {
-        if (chrome.runtime.lastError || !results?.[0]?.result) {
-          reject(new Error(chrome.runtime.lastError?.message ?? "executeScript returned no result"));
-        } else {
-          resolve(results[0].result);
+    function attempt(isRetry) {
+      chrome.scripting.executeScript(
+        {
+          target: { tabId },
+          func: () => ({ url: window.location.href, html: document.documentElement.outerHTML }),
+        },
+        (results) => {
+          if (chrome.runtime.lastError || !results?.[0]?.result) {
+            if (!isRetry) {
+              setTimeout(() => attempt(true), 2000);
+            } else {
+              reject(new Error(chrome.runtime.lastError?.message ?? "executeScript returned no result"));
+            }
+          } else {
+            resolve(results[0].result);
+          }
         }
-      }
-    );
+      );
+    }
+    attempt(false);
   });
 }
 
 // Click the "Next page" button on Amazon's review pagination bar.
 // Returns true if the button was found and clicked; false if there is no next page.
+// Retries once (after 2 s) if executeScript fails.
 function clickNextPage(tabId) {
   return new Promise((resolve, reject) => {
-    chrome.scripting.executeScript(
-      {
-        target: { tabId },
-        func: () => {
-          // Amazon's "Next" link: the last <li> in .a-pagination that isn't disabled.
-          const next = document.querySelector(".a-pagination li.a-last:not(.a-disabled) a");
-          if (next) { next.click(); return true; }
-          return false;
+    function attempt(isRetry) {
+      chrome.scripting.executeScript(
+        {
+          target: { tabId },
+          func: () => {
+            // Amazon's "Next" link: the last <li> in .a-pagination that isn't disabled.
+            const next = document.querySelector(".a-pagination li.a-last:not(.a-disabled) a");
+            if (next) { next.click(); return true; }
+            return false;
+          },
         },
-      },
-      (results) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else {
-          resolve(results?.[0]?.result ?? false);
+        (results) => {
+          if (chrome.runtime.lastError) {
+            if (!isRetry) {
+              setTimeout(() => attempt(true), 2000);
+            } else {
+              reject(new Error(chrome.runtime.lastError.message));
+            }
+          } else {
+            resolve(results?.[0]?.result ?? false);
+          }
         }
-      }
-    );
+      );
+    }
+    attempt(false);
+  });
+}
+
+// Poll every 200 ms until the first review ID changes from `prevId`,
+// or until `maxWaitMs` elapses. Returns "changed" or "timeout".
+// Use after clickNextPage() to know when Amazon's AJAX has finished.
+function waitForReviewsToChange(tabId, prevId, maxWaitMs = 5000) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + maxWaitMs;
+
+    function poll() {
+      chrome.scripting.executeScript(
+        {
+          target: { tabId },
+          func: () => {
+            const first = document.querySelector('li[data-hook="review"]');
+            return first ? first.id : null;
+          },
+        },
+        (results) => {
+          const currentId = results?.[0]?.result ?? null;
+          if (currentId && currentId !== prevId) {
+            resolve("changed");
+          } else if (Date.now() < deadline) {
+            setTimeout(poll, 200);
+          } else {
+            resolve("timeout");
+          }
+        }
+      );
+    }
+
+    setTimeout(poll, 200); // first check after 200 ms
   });
 }
 
@@ -158,9 +206,12 @@ async function startScrape(url, tabId) {
 
   let totalAdded = 0;
   let lastTotal = 0;
+  let captchaError = null;
 
   try {
     for (const star of starsToScrape) {
+      if (captchaError) break;
+
       // One tab per star filter. Amazon loads reviews via AJAX when "Next" is clicked,
       // so we open page 1 and programmatically click "Next" for subsequent pages.
       // Navigating directly to ?pageNumber=N has no effect — Amazon always returns
@@ -169,6 +220,8 @@ async function startScrape(url, tabId) {
       console.log(`[ARS] star=${star}: opening tab → ${reviewUrl}`);
 
       let scrapeTabId = null;
+      let prevFirstId = null; // reset per star filter
+
       try {
         scrapeTabId = await openTabAndLoad(reviewUrl);
 
@@ -179,11 +232,30 @@ async function startScrape(url, tabId) {
             // After initial load, wait for Amazon's JS to render page 1's reviews.
             await sleep(TAB_SETTLE_MS);
           }
-          // Pages 2+: the TAB_SETTLE_MS wait already happened after the last clickNextPage call.
+          // Pages 2+: waitForReviewsToChange already resolved at the end of the previous iteration.
 
           const { url: actualUrl, html } = await extractHtml(scrapeTabId);
           const hasReviews = html.includes('data-hook="review"');
           console.log(`[ARS] star=${star} page=${page} url=${actualUrl} html_len=${html.length} hasReviews=${hasReviews}`);
+
+          // CAPTCHA detection: no reviews + CAPTCHA challenge present.
+          if (!hasReviews && html.includes("Enter the characters you see below")) {
+            captchaError = "Amazon showed a CAPTCHA. Please open a tab, solve it at amazon.com, then re-scrape.";
+            console.warn(`[ARS] CAPTCHA detected on star=${star} page=${page}`);
+            break;
+          }
+
+          // Capture first review ID for DOM polling and cycle detection.
+          const firstIdMatch = html.match(/data-hook="review"[^>]*id="([^"]+)"|id="([^"]+)"[^>]*data-hook="review"/);
+          const currentFirstId = firstIdMatch ? (firstIdMatch[1] ?? firstIdMatch[2]) : null;
+          console.log(`[ARS] prevFirstId=${prevFirstId}`);
+
+          // Cycle detection: DOM didn't change despite the previous click completing.
+          if (prevFirstId !== null && currentFirstId === prevFirstId) {
+            console.log(`[ARS] star=${star} page=${page}: cycle detected, stopping`);
+            break;
+          }
+          prevFirstId = currentFirstId;
 
           const result = await postToServer(html);
           console.log(`[ARS] server: asin=${result.asin} added=${result.added} total=${result.total}`);
@@ -200,15 +272,25 @@ async function startScrape(url, tabId) {
             console.log(`[ARS] clickNext=${clicked}`);
             if (!clicked) break; // "Next" is absent or disabled → no more pages.
 
-            // Wait for the AJAX update to populate the next page's reviews.
-            await sleep(TAB_SETTLE_MS);
+            // Wait for Amazon's AJAX to update the DOM with the next page's reviews.
+            const reason = await waitForReviewsToChange(scrapeTabId, prevFirstId);
+            console.log(`[ARS] reviews settled: reason=${reason}`);
           }
         }
+      } catch (starErr) {
+        console.error(`[ARS] star=${star} failed:`, starErr.message);
       } finally {
         if (scrapeTabId !== null) {
           chrome.tabs.remove(scrapeTabId, () => void chrome.runtime.lastError);
         }
       }
+    }
+
+    if (captchaError) {
+      await chrome.storage.local.set({ status: "error", error: captchaError, asin });
+      chrome.action.setBadgeText({ text: "err", tabId });
+      chrome.action.setBadgeBackgroundColor({ color: "#f44336", tabId });
+      return;
     }
 
     await chrome.storage.local.set({

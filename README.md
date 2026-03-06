@@ -1,210 +1,82 @@
 # Amazon Review Scraper
 
-Collects and structures Amazon product reviews into clean JSON files ready for LLM analysis.
-
-Built in two phases: a **semi-automated HTML parser** (Phase 1, complete) and a **Chrome extension + local server** (Phase 2, in progress) that scrapes reviews on demand with one click.
+A Chrome extension + local server that collects Amazon product reviews with one click and saves them as a structured JSON file in your Downloads folder — ready for analysis.
 
 ---
 
-## Requirements
+## Prerequisites
 
-- Python 3.13+
-- [`uv`](https://docs.astral.sh/uv/) (package manager)
-
----
-
-## Setup
-
-```bash
-# 1. Clone the repo
-git clone <repo-url>
-cd amazon-review-scrapper
-
-# 2. Install dependencies
-uv sync
-```
-
-That's it. No virtual environment activation needed — `uv run` handles it.
+- **Chrome** 120 or newer
+- **Python** 3.13 or newer
+- **uv** (Python package manager — installed in step 3 below)
 
 ---
 
-## Phase 1: Semi-Automated Usage
+## Install
 
-### Step 1 — Save a review page as HTML
+1. **Clone the repo and enter the folder**
 
-1. Open a product's reviews on Amazon, e.g.:
-   `https://www.amazon.com/product-reviews/B08HHQWBBZ`
-2. Filter by star rating (e.g. "1 star")
-3. In your browser: **File → Save Page As → Webpage, HTML Only**
-4. Rename the file following this convention and move it to `raw_reviews/`:
+   ```sh
+   git clone <repo-url>
+   cd amazon_review_scrapper
+   ```
 
-```text
-{ASIN}_{N}-star_{P}-page.html
-```
+2. **Install `uv`** (skip if already installed)
 
-| Part | Meaning | Example |
-| ---- | ------- | ------- |
-| `ASIN` | Amazon product ID (from the URL) | `B08HHQWBBZ` |
-| `N` | Star filter applied | `1` |
-| `P` | Page number | `1` |
+   ```sh
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
 
-Example filenames:
+   Then open a new terminal so `uv` is on your PATH.
 
-```text
-raw_reviews/B08HHQWBBZ_1-star_1-page.html
-raw_reviews/B08HHQWBBZ_1-star_2-page.html
-raw_reviews/B08HHQWBBZ_5-star_1-page.html
-```
+3. **Start the server** (keep this terminal open while scraping)
 
-Repeat for each page and star filter you want to collect.
+   ```sh
+   ./start-server.sh
+   ```
 
----
+   You should see: `Starting Amazon Review Scraper server on http://localhost:8765 ...`
 
-### Step 2 — Parse
-
-Process all files in `raw_reviews/` in one command:
-
-```bash
-uv run main.py parse
-```
-
-Or parse a single file:
-
-```bash
-uv run main.py parse --file raw_reviews/B08HHQWBBZ_1-star_1-page.html
-```
-
-Output is written to `output/{ASIN}_{timestamp}.json`, e.g.:
-
-```text
-output/B08HHQWBBZ_20260305_163240.json
-```
-
-Each run produces a new timestamped file. Reviews from multiple input pages for the same ASIN are merged and deduplicated into a single output file per run.
+4. **Load the Chrome extension**
+   - Open Chrome and go to `chrome://extensions`
+   - Enable **Developer mode** (toggle in the top-right corner)
+   - Click **Load unpacked** and select the `src/extension/` folder inside this repo
 
 ---
 
-### Step 3 — Inspect
+## Usage
 
-Print a summary for a product:
+1. Navigate to any Amazon product page — either `amazon.com/dp/{ASIN}` or `amazon.com/product-reviews/{ASIN}`
+2. Click the orange star (★) icon in your Chrome toolbar
+3. Optionally configure which star ratings to collect and the max number of pages per rating
+4. Click **Scrape this product**
+5. Wait for the popup to show **Done** — the extension scrapes all selected stars and pages automatically
 
-```bash
-uv run main.py show --asin B08HHQWBBZ
-```
+---
 
-```text
-ASIN:    B08HHQWBBZ
-File:    output/B08HHQWBBZ_20260305_163240.json
-Reviews: 20
+## Output
 
-Rating breakdown:
-  5★   0
-  4★   0
-  3★   0
-  2★   0
-  1★  ████████████████████ 20
+When the scrape finishes, Chrome saves **`{ASIN}.json`** to your `~/Downloads/` folder automatically.
+
+You can also access the data from the terminal:
+
+```sh
+# List all scraped products
+uv run main.py list
+
+# Show a summary for a specific product
+uv run main.py show --asin B009LI7VRC
 ```
 
 ---
 
-### Step 4 — Export for LLM analysis
+## Troubleshooting
 
-Dump all reviews as JSONL (one JSON object per line) to stdout:
+**"Server HTTP 500" or "is the server running?" in the popup**
+→ The local server is not running. Open a terminal, go to the repo folder, and run `./start-server.sh`. Leave that terminal open.
 
-```bash
-uv run main.py export --asin B08HHQWBBZ
-```
+**Amazon shows a CAPTCHA**
+→ The extension will report a CAPTCHA error. Switch to the Amazon tab that the extension opened, solve the CAPTCHA, then click **Scrape again** in the popup.
 
-Pipe to a file:
-
-```bash
-uv run main.py export --asin B08HHQWBBZ > reviews.jsonl
-```
-
----
-
-## Output Schema
-
-Each review is a flat JSON object:
-
-```json
-{
-  "review_id":         "R3SIJ21XK7VTUD",
-  "asin":              "B08HHQWBBZ",
-  "reviewer_name":     "Inna",
-  "title":             "WARNING!!!! PLEASE READ BEFOR YOU BUY !",
-  "body":              "I feel obligated to share...",
-  "rating":            1.0,
-  "date":              "2023-10-25",
-  "country":           "the United States",
-  "verified_purchase": true,
-  "helpful_votes":     637,
-  "scraped_at":        "2026-03-05T16:32:40Z"
-}
-```
-
----
-
-## Development
-
-### Running the test suite
-
-```bash
-uv run pytest
-```
-
-Run with verbose output to see each test name:
-
-```bash
-uv run pytest -v
-```
-
-The suite covers:
-
-| Area | What is tested |
-| ---- | -------------- |
-| **Models** | `rating` rejects values outside 1.0–5.0; `helpful_votes` rejects negatives |
-| **Parser** | Standard extraction, ASIN from HTML content, ASIN fallback from filename, non-English titles (hidden span filtering), multi-line body, multi-line date normalization, helpful-vote counts (`N people`, `One person`), verified-purchase detection |
-| **Storage** | Fresh write, upsert adds new reviews, upsert skips duplicates, returned `(added, total)` counts |
-
-Fixture HTML files live in `tests/fixtures/`. Add a new `.html` file there and a matching test in `tests/test_parser.py` when you want to cover a new extraction scenario.
-
----
-
-## Project Structure
-
-```text
-raw_reviews/          ← input: manually saved HTML pages
-output/               ← output: structured JSON per run
-src/
-  models/
-    review.py         ← Pydantic Review model
-  parsers/
-    html_parser.py    ← BeautifulSoup extraction logic
-  storage/
-    json_storage.py   ← save/load review files
-tests/
-  fixtures/           ← minimal HTML files used as parser test inputs
-  conftest.py         ← shared pytest fixtures (Review objects)
-  test_models.py      ← model validation tests
-  test_parser.py      ← HTML parser tests
-  test_storage.py     ← storage upsert tests
-docs/
-  ROADMAP.md          ← epic-based project roadmap
-main.py               ← CLI entry point
-```
-
----
-
-## Roadmap
-
-See [docs/ROADMAP.md](docs/ROADMAP.md).
-
-| Epic | Description | Status |
-| ---- | ----------- | ------ |
-| EPIC-001 | Core models & project scaffold | Complete |
-| EPIC-002 | HTML parser, storage & CLI | Complete |
-| EPIC-003 | Test suite | Complete |
-| EPIC-004 | Browser extension + local ingest server | Active |
-| EPIC-005 | Click-to-scrape with full star/page iteration | Pending |
-| EPIC-006 | Output to local Downloads folder | Pending |
+**Extension won't load / no star icon in toolbar**
+→ Make sure **Developer mode** is enabled in `chrome://extensions`, then try **Load unpacked** again and select the `src/extension/` folder.
