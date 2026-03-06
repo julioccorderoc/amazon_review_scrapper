@@ -169,3 +169,49 @@
 * **Verification Criteria (Definition of Done):**
   * Extension installs in Chrome from the Web Store without enabling Developer mode.
   * Existing scrape functionality is unchanged post-publish.
+
+---
+
+### EPIC-012 — Serverless: JS DOM Parser
+
+* **Status:** `Complete`
+* **Dependencies:** EPIC-010
+* **Business Objective:** Replace the Python-based HTML parsing step with direct DOM extraction inside the live browser tab, eliminating the need for the local server to parse data.
+* **Technical Boundary:** `background.js` only. Added one new function; `startScrape` not changed in this epic — that is EPIC-013.
+* **What was done:**
+  Added `extractReviews(tabId)` — injects a content script that queries the live DOM and returns `{ asin, reviews[], hasCaptcha }`. Direct JS port of `src/parsers/html_parser.py → _parse_review_li`. Retries once after 2 s on `chrome.runtime.lastError`, matching the existing pattern in `extractHtml` and `clickNextPage`.
+* **Verification Criteria (Definition of Done):**
+  * Calling `extractReviews` on a live Amazon review tab in the DevTools console returns a correctly shaped `{ asin, reviews[] }` object — confirmed.
+  * All 10 fields present and correctly typed on each review object — confirmed.
+  * Returns `{ asin: null, reviews: [], hasCaptcha: false }` on a non-review tab — confirmed.
+  * `uv run pytest` — all 21 tests pass (no Python code changed) — confirmed.
+
+---
+
+### EPIC-013 — Serverless: Replace Server Pipeline
+
+* **Status:** `Complete`
+* **Dependencies:** EPIC-012
+* **Business Objective:** The extension works end-to-end with no local server. Coworkers install the extension and click Scrape — a JSON file lands in Downloads with no other setup.
+* **Technical Boundary:** `background.js`, `popup.html`, `popup.js`, `manifest.json`. The Python server and all Python source files are **not deleted** — they remain in the repo for developer CLI use.
+* **What was done:**
+
+  **`background.js`:**
+  * `startScrape` now calls `extractReviews` instead of `extractHtml` + `postToServer`.
+  * All reviews accumulated in `Map<review_id, review>` — cross-star deduplication baked in.
+  * CAPTCHA detection uses `hasCaptcha` from `extractReviews`.
+  * Cycle detection uses `reviews[0]?.review_id`.
+  * On completion, downloads via `data:` URI (Blob URL API not available in MV3 service workers — see BUG-007).
+  * `postToServer()` and `const SERVER` removed.
+
+  **`popup.html`:** `#server-banner` div removed.
+
+  **`popup.js`:** `checkServer()` removed; `setInterval(refresh, 1000)` restored; server error hint removed from error state.
+
+  **`manifest.json`:** `http://localhost:8765/*` removed from `host_permissions`.
+
+* **Verification Criteria (Definition of Done):**
+  * Scraping `amazon.com/dp/{ASIN}` with the server **not running** completes successfully and downloads `{ASIN}.json` — confirmed.
+  * Downloaded JSON contains all 10 fields, no duplicate `review_id`s across pages — confirmed.
+  * No red banner appears when the popup opens — confirmed.
+  * `uv run pytest` — all 21 tests still pass — confirmed.

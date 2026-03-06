@@ -5,8 +5,7 @@
   "description": "Click-to-scrape Amazon reviews into the local ingest server.",
   "permissions": ["storage", "tabs", "downloads", "scripting"],
   "host_permissions": [
-    "*://*.amazon.com/*",
-    "http://localhost:8765/*"
+    "*://*.amazon.com/*"
   ],
   "background": {
     "service_worker": "background.js"

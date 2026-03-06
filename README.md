@@ -1,46 +1,23 @@
 # Amazon Review Scraper
 
-A Chrome extension + local server that collects Amazon product reviews with one click and saves them as a structured JSON file in your Downloads folder — ready for analysis.
+A Chrome extension that collects Amazon product reviews with one click and saves them as a structured JSON file in your Downloads folder — ready for analysis. No server, no terminal, no Python required.
 
 ---
 
 ## Prerequisites
 
 - **Chrome** 120 or newer
-- **Python** 3.13 or newer
-- **uv** (Python package manager — installed in step 3 below)
 
 ---
 
 ## Install
 
-1. **Clone the repo and enter the folder**
+1. **Download the repo** (or receive the `src/extension/` folder as a zip)
 
-   ```sh
-   git clone <repo-url>
-   cd amazon_review_scrapper
-   ```
-
-2. **Install `uv`** (skip if already installed)
-
-   ```sh
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
-
-   Then open a new terminal so `uv` is on your PATH.
-
-3. **Start the server** (keep this terminal open while scraping)
-
-   ```sh
-   ./start-server.sh
-   ```
-
-   You should see: `Starting Amazon Review Scraper server on http://localhost:8765 ...`
-
-4. **Load the Chrome extension**
+2. **Load the Chrome extension**
    - Open Chrome and go to `chrome://extensions`
    - Enable **Developer mode** (toggle in the top-right corner)
-   - Click **Load unpacked** and select the `src/extension/` folder inside this repo
+   - Click **Load unpacked** and select the `src/extension/` folder
 
 ---
 
@@ -56,27 +33,56 @@ A Chrome extension + local server that collects Amazon product reviews with one 
 
 ## Output
 
-When the scrape finishes, Chrome saves **`{ASIN}.json`** to your `~/Downloads/` folder automatically.
+When the scrape finishes, Chrome saves **`{ASIN}.json`** to your `~/Downloads/` folder automatically. Each review includes:
 
-You can also access the data from the terminal:
-
-```sh
-# List all scraped products
-uv run main.py list
-
-# Show a summary for a specific product
-uv run main.py show --asin B009LI7VRC
-```
+| Field | Description |
+| --- | --- |
+| `review_id` | Amazon's unique review ID |
+| `reviewer_name` | Display name of the reviewer |
+| `rating` | Star rating (1.0–5.0) |
+| `title` | Review headline |
+| `body` | Full review text (preserves line breaks) |
+| `date` | Review date (`YYYY-MM-DD`) |
+| `country` | Country where the review was written |
+| `verified_purchase` | Whether Amazon marked it as a verified purchase |
+| `helpful_votes` | Number of "helpful" votes |
+| `scraped_at` | ISO timestamp of when the review was collected |
 
 ---
 
 ## Troubleshooting
 
-**"Server HTTP 500" or "is the server running?" in the popup**
-→ The local server is not running. Open a terminal, go to the repo folder, and run `./start-server.sh`. Leave that terminal open.
-
 **Amazon shows a CAPTCHA**
-→ The extension will report a CAPTCHA error. Switch to the Amazon tab that the extension opened, solve the CAPTCHA, then click **Scrape again** in the popup.
+→ The extension will report a CAPTCHA error in the popup. Switch to the Amazon tab the extension opened, solve the CAPTCHA, then click **Scrape again**.
 
 **Extension won't load / no star icon in toolbar**
 → Make sure **Developer mode** is enabled in `chrome://extensions`, then try **Load unpacked** again and select the `src/extension/` folder.
+
+**Scrape finishes but no file appears in Downloads**
+→ Check that Chrome has permission to download files. Go to `chrome://settings/content/automaticDownloads` and make sure downloads are not blocked.
+
+---
+
+## For Developers
+
+The Python CLI and server remain in the repo for parsing locally-saved HTML files and inspecting stored data:
+
+```sh
+# Install dependencies
+uv sync
+
+# Parse raw HTML files from raw_reviews/ into output/
+uv run main.py parse
+
+# List all scraped products
+uv run main.py list
+
+# Show a summary for a specific product
+uv run main.py show --asin B009LI7VRC
+
+# Export a product's reviews as JSONL
+uv run main.py export --asin B009LI7VRC
+
+# Run the test suite
+uv run pytest
+```

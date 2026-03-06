@@ -20,20 +20,9 @@ function extractAsin(url) {
 
 let currentTabUrl = null;
 
-async function checkServer() {
-  const banner = document.getElementById("server-banner");
-  try {
-    const r = await fetch("http://localhost:8765/health", { signal: AbortSignal.timeout(2000) });
-    if (r.ok) { banner.style.display = "none"; return; }
-  } catch (_) {}
-  banner.style.display = "";
-  banner.textContent = "⚠ Server is not running — open a terminal and run ./start-server.sh";
-}
-
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   if (tabs[0]) currentTabUrl = tabs[0].url || null;
   refresh(); // re-render now that we know the tab's ASIN
-  checkServer();
 });
 
 function attachScrapeBtn() {
@@ -100,7 +89,6 @@ function render(state) {
   if (!staleResult && state.status === "error") {
     el.innerHTML = `
       <p class="error">&#x26A0; ${state.error}</p>
-      <p class="muted">Make sure the server is running:<br><code>uv run main.py serve</code></p>
       ${tabAsin ? `<button id="scrapeBtn" class="primary" style="width:100%;margin-top:8px;">Try again</button>` : ""}
     `;
     attachScrapeBtn();
@@ -128,7 +116,7 @@ function refresh() {
 // and calls refresh() with the correct currentTabUrl. Calling it early (before
 // the tab URL is known) causes a flash of stale content because currentTabUrl
 // is still null and the staleResult guard can't fire.
-const interval = setInterval(() => { refresh(); checkServer(); }, 1000);
+const interval = setInterval(refresh, 1000);
 window.addEventListener("unload", () => clearInterval(interval));
 
 // Settings — star selection (auto-save on change)

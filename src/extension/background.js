@@ -1,8 +1,7 @@
 // Service worker: on START_SCRAPE message from the popup, fetches all Amazon
-// review pages for the target ASIN and posts each to the local ingest server.
+// review pages for the target ASIN and extracts reviews directly from the DOM.
 // Progress is written to chrome.storage.local so the popup can poll it.
 
-const SERVER = "http://localhost:8765";
 const STARS = ["one", "two", "three", "four", "five"];
 const DEFAULT_MAX_PAGES = 5;
 // How long to wait after a tab loads for Amazon's JS to render page 1's reviews.
@@ -146,6 +145,127 @@ function waitForReviewsToChange(tabId, prevId, maxWaitMs = 5000) {
   });
 }
 
+// Extract reviews from the live DOM of an open tab.
+// Returns { asin, reviews[], hasCaptcha }.
+// Port of src/parsers/html_parser.py → _parse_review_li.
+// Retries once (after 2 s) if executeScript fails.
+function extractReviews(tabId) {
+  return new Promise((resolve, reject) => {
+    function attempt(isRetry) {
+      chrome.scripting.executeScript(
+        {
+          target: { tabId },
+          func: () => {
+            function normalize(text) {
+              return text.replace(/\s+/g, " ").trim();
+            }
+
+            const asinMatch = window.location.href.match(/\/product-reviews\/([A-Z0-9]{10})/);
+            const asin = asinMatch ? asinMatch[1] : null;
+            const scrapedAt = new Date().toISOString();
+            const reviews = [];
+
+            for (const li of document.querySelectorAll('li[data-hook="review"]')) {
+              const review_id = li.id || "";
+              if (!review_id) continue;
+
+              // reviewer_name
+              const nameEl = li.querySelector(".a-profile-name");
+              const reviewer_name = nameEl ? normalize(nameEl.textContent) : "";
+              if (!reviewer_name) continue;
+
+              // rating: prefer span.a-icon-alt text; fallback to CSS class a-star-N
+              let rating = 1.0;
+              const ratingAltEl = li.querySelector('[data-hook="review-star-rating"] span.a-icon-alt');
+              if (ratingAltEl) {
+                const m = normalize(ratingAltEl.textContent).match(/([\d.]+)\s+out of/);
+                if (m) rating = parseFloat(m[1]);
+              } else {
+                const starEl = li.querySelector('[data-hook="review-star-rating"]');
+                if (starEl) {
+                  for (const cls of starEl.classList) {
+                    const m = cls.match(/^a-star-(\d)$/);
+                    if (m) { rating = parseFloat(m[1]); break; }
+                  }
+                }
+              }
+
+              // title: first direct-child span (not hidden) with non-empty normalized text
+              let title = "";
+              for (const span of li.querySelectorAll('[data-hook="review-title"] > span:not(.aok-hidden)')) {
+                const t = normalize(span.textContent);
+                if (t) { title = t; break; }
+              }
+              if (!title) continue;
+
+              // body: prefer span inside review-body; fallback to review-body itself
+              // Use innerText to preserve line breaks; do NOT normalize
+              const bodyEl = li.querySelector('[data-hook="review-body"] span') ||
+                             li.querySelector('[data-hook="review-body"]');
+              const body = bodyEl ? bodyEl.innerText.trim() : "";
+              if (!body) continue;
+
+              // date & country
+              const dateEl = li.querySelector('[data-hook="review-date"]');
+              if (!dateEl) continue;
+              const dateText = normalize(dateEl.textContent);
+              const dateMatch = dateText.match(/Reviewed in (.+?) on (.+)/);
+              if (!dateMatch) continue;
+              const country = dateMatch[1].trim();
+              const parsedDate = new Date(dateMatch[2].trim());
+              if (isNaN(parsedDate.getTime())) continue;
+              const date = parsedDate.toISOString().slice(0, 10);
+
+              // verified_purchase
+              const verified_purchase = !!li.querySelector('[data-hook="avp-badge"]');
+
+              // helpful_votes
+              let helpful_votes = 0;
+              const helpfulEl = li.querySelector('[data-hook="helpful-vote-statement"]');
+              if (helpfulEl) {
+                const hm = normalize(helpfulEl.textContent).match(/^(\d+|[Oo]ne)\s+(?:people?|person)\s+found/i);
+                if (hm) {
+                  helpful_votes = hm[1].toLowerCase() === "one" ? 1 : parseInt(hm[1], 10);
+                }
+              }
+
+              reviews.push({
+                review_id,
+                reviewer_name,
+                rating,
+                title,
+                body,
+                date,
+                country,
+                verified_purchase,
+                helpful_votes,
+                scraped_at: scrapedAt,
+              });
+            }
+
+            const hasCaptcha = reviews.length === 0 &&
+              document.body.textContent.includes("Enter the characters you see below");
+
+            return { asin: asin ?? null, reviews, hasCaptcha };
+          },
+        },
+        (results) => {
+          if (chrome.runtime.lastError || !results?.[0]?.result) {
+            if (!isRetry) {
+              setTimeout(() => attempt(true), 2000);
+            } else {
+              reject(new Error(chrome.runtime.lastError?.message ?? "executeScript returned no result"));
+            }
+          } else {
+            resolve(results[0].result);
+          }
+        }
+      );
+    }
+    attempt(false);
+  });
+}
+
 // Draw a 32×32 icon via OffscreenCanvas.
 // active=true → orange (valid Amazon product page), false → grey (anywhere else).
 function drawTabIcon(active) {
@@ -170,16 +290,6 @@ function setTabIcon(tabId, active) {
   } catch (e) {
     // OffscreenCanvas unavailable — default icon is used
   }
-}
-
-async function postToServer(html) {
-  const r = await fetch(`${SERVER}/ingest`, {
-    method: "POST",
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-    body: html,
-  });
-  if (!r.ok) throw new Error(`Server HTTP ${r.status} — is the server running?`);
-  return r.json();
 }
 
 async function startScrape(url, tabId) {
@@ -208,8 +318,8 @@ async function startScrape(url, tabId) {
   chrome.action.setBadgeText({ text: "…", tabId });
   chrome.action.setBadgeBackgroundColor({ color: "#2196F3", tabId });
 
+  const allReviews = new Map();
   let totalAdded = 0;
-  let lastTotal = 0;
   let captchaError = null;
   let firstStar = true;
 
@@ -233,45 +343,39 @@ async function startScrape(url, tabId) {
         scrapeTabId = await openTabAndLoad(reviewUrl);
 
         for (let page = 1; page <= maxPages; page++) {
-          await chrome.storage.local.set({ status: "running", star, page, added: totalAdded, asin });
-
           if (page === 1) {
             // After initial load, wait for Amazon's JS to render page 1's reviews.
             await sleep(TAB_SETTLE_MS);
           }
           // Pages 2+: waitForReviewsToChange already resolved at the end of the previous iteration.
 
-          const { url: actualUrl, html } = await extractHtml(scrapeTabId);
-          const hasReviews = html.includes('data-hook="review"');
-          console.log(`[ARS] star=${star} page=${page} url=${actualUrl} html_len=${html.length} hasReviews=${hasReviews}`);
+          const { reviews, hasCaptcha } = await extractReviews(scrapeTabId);
+          const hasReviews = reviews.length > 0;
+          console.log(`[ARS] star=${star} page=${page} reviews=${reviews.length} hasCaptcha=${hasCaptcha}`);
 
-          // CAPTCHA detection: no reviews + CAPTCHA challenge present.
-          if (!hasReviews && html.includes("Enter the characters you see below")) {
+          // CAPTCHA detection
+          if (hasCaptcha) {
             captchaError = "Amazon showed a CAPTCHA. Please open a tab, solve it at amazon.com, then re-scrape.";
-            console.warn(`[ARS] CAPTCHA detected on star=${star} page=${page}`);
             break;
           }
 
-          // Capture first review ID for DOM polling and cycle detection.
-          const firstIdMatch = html.match(/data-hook="review"[^>]*id="([^"]+)"|id="([^"]+)"[^>]*data-hook="review"/);
-          const currentFirstId = firstIdMatch ? (firstIdMatch[1] ?? firstIdMatch[2]) : null;
+          // Capture first review ID for cycle detection and DOM polling
+          const currentFirstId = reviews[0]?.review_id ?? null;
           console.log(`[ARS] prevFirstId=${prevFirstId}`);
-
-          // Cycle detection: DOM didn't change despite the previous click completing.
           if (prevFirstId !== null && currentFirstId === prevFirstId) {
             console.log(`[ARS] star=${star} page=${page}: cycle detected, stopping`);
             break;
           }
           prevFirstId = currentFirstId;
 
-          const result = await postToServer(html);
-          console.log(`[ARS] server: asin=${result.asin} added=${result.added} total=${result.total}`);
+          // Accumulate (Map.set deduplicates by review_id)
+          const sizeBefore = allReviews.size;
+          for (const r of reviews) allReviews.set(r.review_id, r);
+          totalAdded += allReviews.size - sizeBefore;
 
-          if (result.added > 0) totalAdded += result.added;
-          if (result.total) lastTotal = result.total;
+          await chrome.storage.local.set({ status: "running", star, page, added: totalAdded, asin });
 
-          // No reviews found → empty page or CAPTCHA → stop this star filter.
-          if (result.asin === null) break;
+          if (!hasReviews) break;
 
           if (page < maxPages) {
             // Advance to the next page by clicking Amazon's "Next" button in the tab.
@@ -303,16 +407,14 @@ async function startScrape(url, tabId) {
     await chrome.storage.local.set({
       status: "done",
       asin,
-      totalAdded,
-      total: lastTotal,
+      totalAdded: allReviews.size,
       ts: Date.now(),
     });
-    chrome.action.setBadgeText({ text: String(totalAdded), tabId });
+    chrome.action.setBadgeText({ text: String(allReviews.size), tabId });
     chrome.action.setBadgeBackgroundColor({ color: "#4CAF50", tabId });
 
-    // Trigger download of the aggregated JSON to ~/Downloads/
     chrome.downloads.download({
-      url: `${SERVER}/output/${asin}`,
+      url: "data:application/json;charset=utf-8," + encodeURIComponent(JSON.stringify([...allReviews.values()], null, 2)),
       filename: `${asin}.json`,
       saveAs: false,
     });
