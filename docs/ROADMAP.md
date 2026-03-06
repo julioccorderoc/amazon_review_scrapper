@@ -1,7 +1,7 @@
 # ROADMAP
 
-* **Version:** 0.1.0
-* **Last Updated:** 2026-03-05 (EPIC-005/006 added)
+* **Version:** 0.2.0
+* **Last Updated:** 2026-03-05
 * **Primary Human Owner:** juliocordero
 
 ## Operating Rules for the Planner Agent
@@ -52,42 +52,96 @@
 
 ### EPIC-004 — Phase 2: Browser Extension + Local Ingest Server
 
-* **Status:** `Active`
+* **Status:** `Complete`
 * **Dependencies:** EPIC-003
-* **Business Objective:** Remove the manual save step entirely. The user installs a local Chrome/Edge extension that automatically captures Amazon review pages as they are browsed and sends them to a local server, which feeds the existing parser.
-* **Technical Boundary:** A Chrome Manifest V3 extension (`src/extension/`) that detects Amazon review pages and POSTs the review HTML to a local `fastapi` server (`src/phase2/server.py`). The server calls `parse_file()` directly and upserts into `output/{ASIN}.json`. No changes to `src/models/` or `src/parsers/`.
+* **Business Objective:** Remove the manual save step entirely. A Chrome extension captures Amazon review pages and sends them to a local FastAPI server, which feeds the existing parser.
+* **Technical Boundary:** Chrome MV3 extension (`src/extension/`) + FastAPI server (`src/phase2/server.py`). No changes to `src/models/` or `src/parsers/`.
 * **Verification Criteria (Definition of Done):**
-  * Extension loads as an unpacked extension in Chrome/Edge (`chrome://extensions` → Load unpacked) without errors.
-  * Navigating to an Amazon product review page with the extension active automatically sends the review HTML to the local server.
-  * Local server (`uv run main.py serve`) starts on `localhost:8765`, receives the POST, and upserts reviews into `output/{ASIN}.json`.
-  * `uv run main.py list` reflects new reviews within 5 seconds of the page load.
-  * Visiting multiple star-filter pages for the same product correctly accumulates all reviews without duplicates.
+  * Extension loads as unpacked in Chrome without errors.
+  * Local server (`uv run main.py serve`) starts on `localhost:8765`, receives POSTs, and upserts reviews.
+  * `uv run main.py list` reflects new reviews after a scrape completes.
 
 ### EPIC-005 — Phase 2: Click-to-Scrape with Full Star/Page Iteration
 
-* **Status:** `Active` (core loop implemented; BUG-006 blocks full verification)
+* **Status:** `Complete`
 * **Dependencies:** EPIC-004
-* **Business Objective:** Replace passive page-capture with an on-demand workflow: the user clicks the extension icon once on any Amazon product page and the extension automatically collects all reviews across all star ratings and all pagination pages — without the user having to navigate anywhere.
-* **Technical Boundary:** The background service worker receives a `START_SCRAPE` message from the popup and fetches Amazon review URLs directly (using `host_permissions`), bypassing the SPA pagination problem entirely. The content script is removed. A progress state is stored in `chrome.storage.local` and rendered by the popup in real time. Entry point is any Amazon product or review page; the ASIN is parsed from the active tab URL. A configurable `maxPages` setting (default: **5 pages per star filter**, stored in `chrome.storage.local`) caps the pagination depth and is adjustable from the popup UI.
+* **Business Objective:** One-click scrape: the user clicks the extension icon on any Amazon product page and the extension automatically collects all reviews across selected star ratings and pages without manual navigation.
+* **Technical Boundary:** Background service worker iterates stars × pages. Pagination is click-based (simulates clicking "Next" inside a live background tab) because Amazon loads review pages via client-side AJAX — `?pageNumber=N` in the URL is ignored by Amazon's server. Configurable `maxPages` (default 5) and star filter selection in the popup.
+* **Key implementation insight (BUG-006):** Amazon's server always returns page 1 content regardless of `?pageNumber=N`. Pages 2+ are only reachable by clicking the "Next" button inside a live browser tab, which triggers an AJAX update. The fix: one background tab per star filter; programmatic click on `.a-pagination li.a-last:not(.a-disabled) a`; 3 s settle delay for the AJAX to complete.
 * **Verification Criteria (Definition of Done):**
-  * Clicking the "Scrape this product" button in the popup on `https://www.amazon.com/dp/{ASIN}` (or any `/product-reviews/{ASIN}` URL) starts scraping.
-  * The background worker iterates selected stars and for each fetches pages 1 … `maxPages` or until a page returns no reviews.
-  * The default max pages is 5 (≤ 50 reviews per star). The user can change this and select individual star filters in the popup.
-  * The popup shows live progress: current star, current page, and running total of reviews added.
-  * The extension icon is orange on valid Amazon product pages and grey elsewhere.
-  * Navigating away from the page mid-scrape does not cancel the operation.
-  * All reviews are deduplicated; re-clicking on the same product adds 0 duplicates.
-  * `uv run main.py list` reflects the full accumulation after the click completes.
-* **Open blocker:** BUG-006 — pages 2+ of most star filters return no reviews from the parser. See `.ai/ERRORS.md` and `.ai/NEXT_SESSION_PROMPT.md`.
+  * Clicking "Scrape this product" on `amazon.com/dp/{ASIN}` scrapes all selected stars and pages.
+  * Pages 2+ return different review IDs from page 1 (confirmed via `first_ids` logging).
+  * Popup shows live progress (star, page, running total).
+  * All reviews are deduplicated; re-scraping adds 0 duplicates.
+  * `uv run pytest` — all 21 tests pass.
 
 ### EPIC-006 — Phase 2: Output to Local Downloads Folder
 
+* **Status:** `Complete`
+* **Dependencies:** EPIC-005
+* **Business Objective:** Deliver scraped data directly to the user's Downloads folder — no terminal navigation needed.
+* **Technical Boundary:** `GET /output/{asin}` endpoint on the FastAPI server; `chrome.downloads.download()` in the background script after scrape completion; `"downloads"` permission in `manifest.json`.
+* **Verification Criteria (Definition of Done):**
+  * After scraping completes, Chrome saves `{ASIN}.json` to `~/Downloads/` automatically.
+  * Popup confirms the saved filename.
+  * `uv run main.py list` and the downloaded file show identical review counts.
+
+---
+
+### EPIC-007 — Speed Optimization: DOM-Polling Settle
+
 * **Status:** `Pending`
 * **Dependencies:** EPIC-005
-* **Business Objective:** Deliver scraped data directly to the user's standard Downloads folder so no terminal navigation is needed to find the output file.
-* **Technical Boundary:** Add a `GET /output/{asin}` endpoint to the FastAPI server that serves the stored JSON. After a full scrape completes, the extension calls `chrome.downloads.download()` pointing at that endpoint, causing Chrome to save `{ASIN}.json` to the OS Downloads folder. The server's internal `output/` directory is unchanged and continues to act as the dedup store. Requires `"downloads"` permission in `manifest.json`.
+* **Business Objective:** Reduce full-scrape time from ~5–8 minutes to ~2–3 minutes without sacrificing reliability. The current `TAB_SETTLE_MS = 3000ms` fixed delay per page is conservative; Amazon's AJAX typically completes in under 1 second.
+* **Technical Boundary:** `background.js` only. Replace `await sleep(TAB_SETTLE_MS)` after each `clickNextPage` with a DOM-polling loop that detects when the first review ID has changed. Fall back to a 5-second hard timeout if the DOM never updates (CAPTCHA, last page, etc.).
 * **Verification Criteria (Definition of Done):**
-  * After clicking the extension and scraping completes, Chrome automatically saves `{ASIN}.json` to `~/Downloads/`.
-  * Re-running a scrape overwrites the existing download file (same filename).
-  * The popup confirms the download path.
-  * `uv run main.py list` and the downloaded file show identical review counts.
+  * Effective per-page wait time is ≤ 1.5 s on a normal connection (measured via console timestamps).
+  * `first_ids` in server logs still differ between pages (correctness unchanged).
+  * The 5-second fallback timeout fires correctly when the "Next" button is clicked but no new reviews appear (tested by manually disabling AJAX in DevTools).
+  * `uv run pytest` — all 21 tests still pass.
+
+### EPIC-008 — Robustness
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-007
+* **Business Objective:** Make the scraper resilient to the real-world failure modes encountered during development: CAPTCHAs, per-star tab crashes, Amazon returning the same page twice, and transient server errors.
+* **Technical Boundary:** `background.js` and `src/phase2/server.py`.
+* **Planned improvements:**
+  * **CAPTCHA detection:** if `li[data-hook="review"]` is absent but a CAPTCHA element is present in the DOM, stop that star filter and surface a human-readable popup error ("Amazon showed a CAPTCHA — please solve it manually, then re-scrape").
+  * **Per-star error isolation:** wrap each star's tab lifecycle in its own `try/catch` so a tab crash or timeout on one star doesn't abort remaining stars.
+  * **Cycle detection:** if `first_ids` on the new page match the previous page's `first_ids`, treat it as end-of-pages and break.
+  * **Single retry:** on `executeScript` failure or server 5xx, retry once with a 2 s backoff.
+* **Verification Criteria (Definition of Done):**
+  * Manually triggering a CAPTCHA (by scraping aggressively) shows a clear popup error message and does not corrupt stored data.
+  * Killing a scrape tab mid-scrape causes that star to be skipped; remaining stars complete normally.
+  * Re-scraping a product with only 1 page of reviews per star terminates at the correct page (no infinite cycle).
+
+### EPIC-009 — Distribution / Packaging
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-006
+* **Business Objective:** Enable non-technical coworkers to install and use the tool with minimal setup — no terminal commands beyond a single install step.
+* **Planned deliverables:**
+
+  **Short term (one afternoon):**
+  * `README.md` — top-level install guide with screenshots:
+    1. Clone the repo.
+    2. Install `uv` (one `curl` command).
+    3. Start the server: `uv run main.py serve`.
+    4. Install the extension: `chrome://extensions` → Load unpacked → `src/extension/`.
+    5. Navigate to an Amazon product page and click the extension icon.
+  * `start-server.sh` — convenience script that checks for `uv`, prints a helpful error if missing, then runs `uv run main.py serve`.
+
+  **Medium term (Chrome Web Store):**
+  * Publish the extension to the Chrome Web Store as a private group listing (visible only to invited Google accounts). Eliminates the need for developer mode in Chrome.
+  * Cost: $5 one-time developer registration fee.
+  * Timeline: 1–7 day review once submitted.
+
+  **Longer term (standalone binary):**
+  * Package the Python server as a native app using PyInstaller (macOS `.app` / Windows `.exe`) so coworkers with no Python experience can double-click to start the server.
+  * Bundle with an Electron or Tauri wrapper if a system-tray icon is desired.
+
+* **Verification Criteria (Definition of Done):**
+  * A coworker with no prior setup can install and run a full scrape following only the README.
+  * `start-server.sh` is executable and works on macOS and Linux out of the box.
+  * (Web Store milestone) Extension installs in Chrome without enabling developer mode.
