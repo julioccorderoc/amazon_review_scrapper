@@ -38,16 +38,15 @@ def _text(tag: Tag, selector: str) -> str:
     return _normalize(el.get_text()) if el else ""
 
 
-def parse_file(path: Path) -> list[Review]:
-    """Parse a single raw HTML file and return its reviews.
+def parse_html(html: str, source: str = "") -> list[Review]:
+    """Parse a raw HTML string and return its reviews.
 
-    The ASIN is extracted from the HTML content — no filename convention required.
+    `source` is an optional hint (e.g. a filename) used only as a fallback when
+    the ASIN cannot be found in the HTML content itself.
     """
-    html = path.read_text(encoding="utf-8")
-
-    asin = _extract_asin(html, path.name)
+    asin = _extract_asin(html, source)
     if not asin:
-        raise ValueError(f"Could not extract ASIN from '{path.name}'")
+        raise ValueError(f"Could not extract ASIN from HTML content or source '{source}'")
 
     soup = BeautifulSoup(html, "lxml")
     scraped_at = datetime.now(tz=timezone.utc)
@@ -57,6 +56,11 @@ def parse_file(path: Path) -> list[Review]:
         for li in soup.select('li[data-hook="review"]')
         if (review := _parse_review_li(li, asin, scraped_at))
     ]
+
+
+def parse_file(path: Path) -> list[Review]:
+    """Parse a single raw HTML file and return its reviews."""
+    return parse_html(path.read_text(encoding="utf-8"), path.name)
 
 
 def _parse_review_li(li: Tag, asin: str, scraped_at: datetime) -> Review | None:
@@ -107,8 +111,9 @@ def _parse_rating(li: Tag) -> float:
 
 
 def _parse_title(li: Tag) -> str:
-    # Select the first visible, non-empty span inside the title anchor
-    for span in li.select('[data-hook="review-title"] span:not(.aok-hidden)'):
+    # Use > (direct child) so the nested span.a-icon-alt inside <i> is skipped.
+    # Non-English pages inject a hidden span first; :not(.aok-hidden) skips it.
+    for span in li.select('[data-hook="review-title"] > span:not(.aok-hidden)'):
         text = _normalize(span.get_text())
         if text:
             return text

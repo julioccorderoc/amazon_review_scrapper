@@ -82,6 +82,13 @@ def cmd_list(_args: argparse.Namespace) -> None:
             print(f"{asin:<15}  (unreadable)")
 
 
+def cmd_serve(_args: argparse.Namespace) -> None:
+    import uvicorn
+
+    print("Starting ingest server on http://localhost:8765 — press Ctrl+C to stop.")
+    uvicorn.run("src.phase2.server:app", host="127.0.0.1", port=8765)
+
+
 def cmd_export(args: argparse.Namespace) -> None:
     asin = args.asin.upper()
     path = asin_path(asin)
@@ -114,6 +121,9 @@ def main() -> None:
     p_export = sub.add_parser("export", help="Dump reviews as JSONL (stdout)")
     p_export.add_argument("--asin", required=True, metavar="ASIN")
     p_export.set_defaults(func=cmd_export)
+
+    p_serve = sub.add_parser("serve", help="Start the local ingest server on localhost:8765")
+    p_serve.set_defaults(func=cmd_serve)
 
     args = parser.parse_args()
     args.func(args)

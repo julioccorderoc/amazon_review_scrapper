@@ -145,6 +145,32 @@ Each review is a flat JSON object:
 
 ---
 
+## Development
+
+### Running the test suite
+
+```bash
+uv run pytest
+```
+
+Run with verbose output to see each test name:
+
+```bash
+uv run pytest -v
+```
+
+The suite covers:
+
+| Area | What is tested |
+| ---- | -------------- |
+| **Models** | `rating` rejects values outside 1.0–5.0; `helpful_votes` rejects negatives |
+| **Parser** | Standard extraction, ASIN from HTML content, ASIN fallback from filename, non-English titles (hidden span filtering), multi-line body, multi-line date normalization, helpful-vote counts (`N people`, `One person`), verified-purchase detection |
+| **Storage** | Fresh write, upsert adds new reviews, upsert skips duplicates, returned `(added, total)` counts |
+
+Fixture HTML files live in `tests/fixtures/`. Add a new `.html` file there and a matching test in `tests/test_parser.py` when you want to cover a new extraction scenario.
+
+---
+
 ## Project Structure
 
 ```text
@@ -157,6 +183,12 @@ src/
     html_parser.py    ← BeautifulSoup extraction logic
   storage/
     json_storage.py   ← save/load review files
+tests/
+  fixtures/           ← minimal HTML files used as parser test inputs
+  conftest.py         ← shared pytest fixtures (Review objects)
+  test_models.py      ← model validation tests
+  test_parser.py      ← HTML parser tests
+  test_storage.py     ← storage upsert tests
 docs/
   ROADMAP.md          ← epic-based project roadmap
 main.py               ← CLI entry point
@@ -172,4 +204,5 @@ See [docs/ROADMAP.md](docs/ROADMAP.md).
 | ---- | ----------- | ------ |
 | EPIC-001 | Core models & project scaffold | Complete |
 | EPIC-002 | HTML parser, storage & CLI | Complete |
-| EPIC-003 | Browser extension + local ingest server | Active |
+| EPIC-003 | Test suite | Complete |
+| EPIC-004 | Browser extension + local ingest server | Active |

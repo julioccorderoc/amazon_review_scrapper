@@ -39,7 +39,7 @@
 
 ### EPIC-003 — Phase 1: Test Suite
 
-* **Status:** `Active`
+* **Status:** `Complete`
 * **Dependencies:** EPIC-002
 * **Business Objective:** Give teammates confidence when adding new HTML files or modifying the parser. Regressions should be caught immediately, not discovered when reviews come out wrong.
 * **Technical Boundary:** `pytest` test suite under `tests/`. Tests cover the parser (using sample HTML files as fixtures), the storage upsert logic, and the `Review` model validation. No mocking of file I/O — tests use real fixture files.
@@ -52,7 +52,7 @@
 
 ### EPIC-004 — Phase 2: Browser Extension + Local Ingest Server
 
-* **Status:** `Pending`
+* **Status:** `Active`
 * **Dependencies:** EPIC-003
 * **Business Objective:** Remove the manual save step entirely. The user installs a local Chrome/Edge extension that automatically captures Amazon review pages as they are browsed and sends them to a local server, which feeds the existing parser.
 * **Technical Boundary:** A Chrome Manifest V3 extension (`src/extension/`) that detects Amazon review pages and POSTs the review HTML to a local `fastapi` server (`src/phase2/server.py`). The server calls `parse_file()` directly and upserts into `output/{ASIN}.json`. No changes to `src/models/` or `src/parsers/`.
