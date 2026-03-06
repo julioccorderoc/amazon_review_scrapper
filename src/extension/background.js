@@ -4,11 +4,6 @@
 
 const STARS = ["one", "two", "three", "four", "five"];
 const DEFAULT_MAX_PAGES = 5;
-// How long to wait after a tab loads for Amazon's JS to render page 1's reviews.
-// Amazon always embeds page 1 in the initial static HTML; subsequent pages are
-// loaded asynchronously when the user clicks "Next" — so we simulate that click
-// and poll the DOM for the first review ID change rather than using a fixed delay.
-const TAB_SETTLE_MS = 1500; // page-1 initial settle only; pages 2+ use DOM polling
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -145,6 +140,37 @@ function waitForReviewsToChange(tabId, prevId, maxWaitMs = 5000) {
   });
 }
 
+// Poll every 300 ms until at least one review element appears in the DOM,
+// or until maxWaitMs elapses. Returns "ready" or "timeout".
+// Used for page 1 instead of a fixed sleep: adapts to both fast and slow
+// rendering environments without over-waiting on fast machines.
+function waitForReviewsToAppear(tabId, maxWaitMs = 8000) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + maxWaitMs;
+
+    function poll() {
+      chrome.scripting.executeScript(
+        {
+          target: { tabId },
+          func: () => document.querySelectorAll('li[data-hook="review"]').length,
+        },
+        (results) => {
+          const count = results?.[0]?.result ?? 0;
+          if (count > 0) {
+            resolve("ready");
+          } else if (Date.now() < deadline) {
+            setTimeout(poll, 300);
+          } else {
+            resolve("timeout");
+          }
+        }
+      );
+    }
+
+    setTimeout(poll, 300); // first check after 300 ms
+  });
+}
+
 // Extract reviews from the live DOM of an open tab.
 // Returns { asin, reviews[], hasCaptcha }.
 // Port of src/parsers/html_parser.py → _parse_review_li.
@@ -176,11 +202,23 @@ function extractReviews(tabId) {
 
               // rating: prefer span.a-icon-alt text; fallback to CSS class a-star-N
               let rating = 1.0;
+              let ratingFromText = false;
               const ratingAltEl = li.querySelector('[data-hook="review-star-rating"] span.a-icon-alt');
               if (ratingAltEl) {
-                const m = normalize(ratingAltEl.textContent).match(/([\d.]+)\s+out of/);
-                if (m) rating = parseFloat(m[1]);
-              } else {
+                const ratingText = normalize(ratingAltEl.textContent);
+                // English: "4.5 out of 5 stars"
+                let rm = ratingText.match(/([\d.]+)\s+out of/);
+                if (!rm) {
+                  // Spanish/Portuguese/Italian: "4,5 de 5 estrellas" / "3.0 de 5 estrellas"
+                  rm = ratingText.match(/([\d.,]+)\s+de\s+\d/);
+                }
+                if (rm) {
+                  rating = parseFloat(rm[1].replace(",", "."));
+                  ratingFromText = true;
+                }
+              }
+              // CSS class fallback — used when span.a-icon-alt is absent OR when text parsing failed
+              if (!ratingFromText) {
                 const starEl = li.querySelector('[data-hook="review-star-rating"]');
                 if (starEl) {
                   for (const cls of starEl.classList) {
@@ -205,27 +243,84 @@ function extractReviews(tabId) {
               const body = bodyEl ? bodyEl.innerText.trim() : "";
               if (!body) continue;
 
-              // date & country
+              // date & country — try multiple Amazon UI locales.
+              // Amazon renders dates in the browser's language, so a Chrome set to
+              // Spanish shows "Revisado en … el 15 de octubre de 2023" instead of
+              // "Reviewed in … on October 15, 2023". We try several patterns and
+              // never skip the review if none match — date is non-blocking.
+              const DATE_PATTERNS = [
+                /Reviewed in (.+?) on (.+)/,                                                    // English
+                /(?:Revisado|Reseñado|Calificado|Valorado|Evaluado|Opinado) en (.+?) el (.+)/i, // Spanish (explicit verbs)
+                /\w+ en (.+?) el (\d.+)/,                                                       // Spanish generic catch-all
+                /Avaliado n[oa] (.+?) em (.+)/,                                                 // Portuguese
+                /Évalué en (.+?) le (.+)/,                                                      // French
+                /Rezensiert in (.+?) am (.+)/,                                                  // German
+                /Recensito in (.+?) il (.+)/,                                                   // Italian
+              ];
+              const SPANISH_MONTHS = {
+                enero:"January", febrero:"February", marzo:"March", abril:"April",
+                mayo:"May", junio:"June", julio:"July", agosto:"August",
+                septiembre:"September", octubre:"October", noviembre:"November", diciembre:"December",
+              };
+              const PORTUGUESE_MONTHS = {
+                janeiro:"January", fevereiro:"February", março:"March", abril:"April",
+                maio:"May", junho:"June", julho:"July", agosto:"August",
+                setembro:"September", outubro:"October", novembro:"November", dezembro:"December",
+              };
+              function parseLocalizedDate(s) {
+                let d = new Date(s); // works for English ("October 15, 2023")
+                if (!isNaN(d.getTime())) return d;
+                // "15 de octubre de 2023" / "15 de octubre del 2023" / "15 de outubro de 2023"
+                const m = s.match(/(\d{1,2})\s+de\s+(\w+)\s+del?\s+(\d{4})/);
+                if (m) {
+                  const month = SPANISH_MONTHS[m[2].toLowerCase()] || PORTUGUESE_MONTHS[m[2].toLowerCase()];
+                  if (month) { d = new Date(`${month} ${m[1]}, ${m[3]}`); }
+                  if (!isNaN(d.getTime())) return d;
+                }
+                return null;
+              }
+              let date = null;
+              let country = "";
               const dateEl = li.querySelector('[data-hook="review-date"]');
-              if (!dateEl) continue;
-              const dateText = normalize(dateEl.textContent);
-              const dateMatch = dateText.match(/Reviewed in (.+?) on (.+)/);
-              if (!dateMatch) continue;
-              const country = dateMatch[1].trim();
-              const parsedDate = new Date(dateMatch[2].trim());
-              if (isNaN(parsedDate.getTime())) continue;
-              const date = parsedDate.toISOString().slice(0, 10);
+              if (dateEl) {
+                const dateText = normalize(dateEl.textContent);
+                for (const pattern of DATE_PATTERNS) {
+                  const m = dateText.match(pattern);
+                  if (m) {
+                    country = m[1].trim();
+                    const parsed = parseLocalizedDate(m[2].trim());
+                    // Store ISO date if parseable; raw text otherwise — never null out the review
+                    date = parsed ? parsed.toISOString().slice(0, 10) : m[2].trim();
+                    break;
+                  }
+                }
+              }
 
               // verified_purchase
               const verified_purchase = !!li.querySelector('[data-hook="avp-badge"]');
 
-              // helpful_votes
+              // helpful_votes — multi-locale patterns
               let helpful_votes = 0;
               const helpfulEl = li.querySelector('[data-hook="helpful-vote-statement"]');
               if (helpfulEl) {
-                const hm = normalize(helpfulEl.textContent).match(/^(\d+|[Oo]ne)\s+(?:people?|person)\s+found/i);
-                if (hm) {
-                  helpful_votes = hm[1].toLowerCase() === "one" ? 1 : parseInt(hm[1], 10);
+                const HELPFUL_PATTERNS = [
+                  // English: "12 people found this helpful" / "One person found this helpful"
+                  { re: /^(\d+|[Oo]ne)\s+(?:people?|person)\s+found/i,
+                    parse: (m) => m[1].toLowerCase() === "one" ? 1 : parseInt(m[1], 10) },
+                  // Spanish: "A 12 personas les pareció útil" / "A una persona le pareció útil"
+                  { re: /A\s+(\d+|una)\s+persona/i,
+                    parse: (m) => m[1].toLowerCase() === "una" ? 1 : parseInt(m[1], 10) },
+                  // Portuguese: "12 pessoas acharam isso útil"
+                  { re: /^(\d+)\s+pessoa/i,
+                    parse: (m) => parseInt(m[1], 10) },
+                  // French: "12 personnes ont trouvé cela utile"
+                  { re: /^(\d+)\s+personne/i,
+                    parse: (m) => parseInt(m[1], 10) },
+                ];
+                const helpText = normalize(helpfulEl.textContent);
+                for (const { re, parse } of HELPFUL_PATTERNS) {
+                  const hm = helpText.match(re);
+                  if (hm) { helpful_votes = parse(hm); break; }
                 }
               }
 
@@ -243,10 +338,35 @@ function extractReviews(tabId) {
               });
             }
 
-            const hasCaptcha = reviews.length === 0 &&
-              document.body.textContent.includes("Enter the characters you see below");
+            const bodyText = document.body.textContent;
 
-            return { asin: asin ?? null, reviews, hasCaptcha };
+            const hasCaptcha = reviews.length === 0 &&
+              bodyText.includes("Enter the characters you see below");
+
+            // Login wall: Amazon redirected to sign-in, or shows a sign-in gate
+            // in-page (e.g. to see more reviews). Checked after review extraction
+            // so a partial page that has some reviews + a gate is still counted.
+            const hasLoginWall = reviews.length === 0 && (
+              !!document.querySelector('#ap_email, #signInSubmit, [name="signIn"]') ||
+              bodyText.includes("Sign in to see all reviews") ||
+              bodyText.includes("Sign in to see your reviews") ||
+              bodyText.includes("to see more reviews")
+            );
+
+            // Wrong page: URL no longer points at a product-reviews path.
+            // Catches geo-redirects (amazon.com → amazon.co.uk homepage),
+            // "page not found", maintenance pages, etc.
+            const isWrongPage = !window.location.pathname.includes("/product-reviews/");
+
+            return {
+              asin: asin ?? null,
+              reviews,
+              hasCaptcha,
+              hasLoginWall,
+              isWrongPage,
+              _url: window.location.href,
+              _title: document.title,
+            };
           },
         },
         (results) => {
@@ -344,18 +464,36 @@ async function startScrape(url, tabId) {
 
         for (let page = 1; page <= maxPages; page++) {
           if (page === 1) {
-            // After initial load, wait for Amazon's JS to render page 1's reviews.
-            await sleep(TAB_SETTLE_MS);
+            // Poll until at least one review element appears (up to 8 s).
+            // Chrome fires tab status "complete" when the network request finishes,
+            // but Amazon then renders reviews via client-side JS — a fixed sleep
+            // is unreliable across machines and network speeds.
+            const settleReason = await waitForReviewsToAppear(scrapeTabId);
+            console.log(`[ARS] page 1 settle: ${settleReason}`);
           }
           // Pages 2+: waitForReviewsToChange already resolved at the end of the previous iteration.
 
-          const { reviews, hasCaptcha } = await extractReviews(scrapeTabId);
+          const { reviews, hasCaptcha, hasLoginWall, isWrongPage, _url, _title } = await extractReviews(scrapeTabId);
           const hasReviews = reviews.length > 0;
-          console.log(`[ARS] star=${star} page=${page} reviews=${reviews.length} hasCaptcha=${hasCaptcha}`);
+          console.log(`[ARS] star=${star} page=${page} reviews=${reviews.length} hasCaptcha=${hasCaptcha} hasLoginWall=${hasLoginWall} isWrongPage=${isWrongPage} url=${_url} title=${_title}`);
 
           // CAPTCHA detection
           if (hasCaptcha) {
             captchaError = "Amazon showed a CAPTCHA. Please open a tab, solve it at amazon.com, then re-scrape.";
+            break;
+          }
+
+          // Login wall: Amazon requires sign-in to see reviews
+          if (hasLoginWall) {
+            captchaError = "Amazon requires you to be signed in to see all reviews. Please log in to Amazon in Chrome, then scrape again.";
+            console.warn(`[ARS] Login wall on star=${star} page=${page}: ${_url}`);
+            break;
+          }
+
+          // Wrong page: geo-redirect (VPN), maintenance page, or similar
+          if (isWrongPage) {
+            captchaError = `Amazon redirected to an unexpected page: ${_url} — If you are using a VPN, try disabling it and scraping again.`;
+            console.warn(`[ARS] Wrong page on star=${star} page=${page}: title="${_title}" url=${_url}`);
             break;
           }
 
