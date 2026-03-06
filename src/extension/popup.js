@@ -1,5 +1,6 @@
 const STAR_LABELS = { one: "1 ★", two: "2 ★", three: "3 ★", four: "4 ★", five: "5 ★" };
 const DEFAULT_MAX_PAGES = 5;
+const DEFAULT_STARS = ["one", "two", "three", "four", "five"];
 
 function formatAgo(ts) {
   const secs = Math.round((Date.now() - ts) / 1000);
@@ -21,6 +22,7 @@ let currentTabUrl = null;
 
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   if (tabs[0]) currentTabUrl = tabs[0].url || null;
+  refresh(); // re-render now that we know the tab's ASIN
 });
 
 function attachScrapeBtn() {
@@ -29,7 +31,7 @@ function attachScrapeBtn() {
   btn.addEventListener("click", () => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (!tabs[0]) return;
-      chrome.runtime.sendMessage({ type: "START_SCRAPE", url: tabs[0].url });
+      chrome.runtime.sendMessage({ type: "START_SCRAPE", url: tabs[0].url, tabId: tabs[0].id });
       btn.disabled = true;
       btn.textContent = "Starting…";
     });
@@ -39,6 +41,10 @@ function attachScrapeBtn() {
 function render(state) {
   const el = document.getElementById("content");
   const tabAsin = extractAsin(currentTabUrl);
+
+  // If the current tab is a different product than the last stored result,
+  // ignore the stale result and show idle for the new product instead.
+  const staleResult = tabAsin && state.asin && tabAsin !== state.asin;
 
   if (state.status === "running") {
     const star = STAR_LABELS[state.star] || state.star;
@@ -56,7 +62,7 @@ function render(state) {
     return;
   }
 
-  if (state.status === "done") {
+  if (!staleResult && state.status === "done") {
     const ago = state.ts ? formatAgo(state.ts) : "";
     el.innerHTML = `
       <div class="row"><span class="label">ASIN</span><span class="value">${state.asin ?? "—"}</span></div>
@@ -69,7 +75,7 @@ function render(state) {
     return;
   }
 
-  if (state.status === "error") {
+  if (!staleResult && state.status === "error") {
     el.innerHTML = `
       <p class="error">&#x26A0; ${state.error}</p>
       <p class="muted">Make sure the server is running:<br><code>uv run main.py serve</code></p>
@@ -96,13 +102,39 @@ function refresh() {
   );
 }
 
-refresh();
+// Do NOT call refresh() here. The tabs.query callback above fires within ~20ms
+// and calls refresh() with the correct currentTabUrl. Calling it early (before
+// the tab URL is known) causes a flash of stale content because currentTabUrl
+// is still null and the staleResult guard can't fire.
 const interval = setInterval(refresh, 1000);
 window.addEventListener("unload", () => clearInterval(interval));
+
+// Settings — star selection (auto-save on change)
+chrome.storage.local.get("selectedStars", ({ selectedStars }) => {
+  const active = Array.isArray(selectedStars) && selectedStars.length > 0
+    ? selectedStars
+    : DEFAULT_STARS;
+  document.querySelectorAll(".star-cb").forEach((cb) => {
+    cb.checked = active.includes(cb.value);
+  });
+});
+
+document.querySelectorAll(".star-cb").forEach((cb) => {
+  cb.addEventListener("change", () => {
+    const selected = [...document.querySelectorAll(".star-cb:checked")].map((c) => c.value);
+    chrome.storage.local.set({ selectedStars: selected });
+  });
+});
 
 // Settings — max pages per star
 chrome.storage.local.get("maxPages", ({ maxPages }) => {
   document.getElementById("maxPages").value = maxPages ?? DEFAULT_MAX_PAGES;
+});
+
+// Auto-save on every keystroke so the stored value is always current.
+document.getElementById("maxPages").addEventListener("input", () => {
+  const val = parseInt(document.getElementById("maxPages").value, 10);
+  if (!isNaN(val) && val > 0) chrome.storage.local.set({ maxPages: val });
 });
 
 document.getElementById("saveSettings").addEventListener("click", () => {

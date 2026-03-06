@@ -3,7 +3,7 @@
   "name": "Amazon Review Scraper",
   "version": "1.0",
   "description": "Click-to-scrape Amazon reviews into the local ingest server.",
-  "permissions": ["storage", "tabs", "downloads"],
+  "permissions": ["storage", "tabs", "downloads", "scripting"],
   "host_permissions": [
     "*://*.amazon.com/*",
     "http://localhost:8765/*"

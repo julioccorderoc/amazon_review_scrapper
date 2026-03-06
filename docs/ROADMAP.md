@@ -65,18 +65,20 @@
 
 ### EPIC-005 — Phase 2: Click-to-Scrape with Full Star/Page Iteration
 
-* **Status:** `Pending`
+* **Status:** `Active` (core loop implemented; BUG-006 blocks full verification)
 * **Dependencies:** EPIC-004
 * **Business Objective:** Replace passive page-capture with an on-demand workflow: the user clicks the extension icon once on any Amazon product page and the extension automatically collects all reviews across all star ratings and all pagination pages — without the user having to navigate anywhere.
 * **Technical Boundary:** The background service worker receives a `START_SCRAPE` message from the popup and fetches Amazon review URLs directly (using `host_permissions`), bypassing the SPA pagination problem entirely. The content script is removed. A progress state is stored in `chrome.storage.local` and rendered by the popup in real time. Entry point is any Amazon product or review page; the ASIN is parsed from the active tab URL. A configurable `maxPages` setting (default: **5 pages per star filter**, stored in `chrome.storage.local`) caps the pagination depth and is adjustable from the popup UI.
 * **Verification Criteria (Definition of Done):**
   * Clicking the "Scrape this product" button in the popup on `https://www.amazon.com/dp/{ASIN}` (or any `/product-reviews/{ASIN}` URL) starts scraping.
-  * The background worker iterates stars 1–5, and for each star fetches pages 1 … `maxPages` or until a page returns 0 reviews.
-  * The default max pages is 5 (≤ 50 reviews per star, ≤ 250 total). The user can change this in the popup settings row.
+  * The background worker iterates selected stars and for each fetches pages 1 … `maxPages` or until a page returns no reviews.
+  * The default max pages is 5 (≤ 50 reviews per star). The user can change this and select individual star filters in the popup.
   * The popup shows live progress: current star, current page, and running total of reviews added.
+  * The extension icon is orange on valid Amazon product pages and grey elsewhere.
   * Navigating away from the page mid-scrape does not cancel the operation.
   * All reviews are deduplicated; re-clicking on the same product adds 0 duplicates.
   * `uv run main.py list` reflects the full accumulation after the click completes.
+* **Open blocker:** BUG-006 — pages 2+ of most star filters return no reviews from the parser. See `.ai/ERRORS.md` and `.ai/NEXT_SESSION_PROMPT.md`.
 
 ### EPIC-006 — Phase 2: Output to Local Downloads Folder
 

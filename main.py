@@ -83,8 +83,11 @@ def cmd_list(_args: argparse.Namespace) -> None:
 
 
 def cmd_serve(_args: argparse.Namespace) -> None:
+    import logging
+
     import uvicorn
 
+    logging.basicConfig(level=logging.INFO)
     print("Starting ingest server on http://localhost:8765 — press Ctrl+C to stop.")
     uvicorn.run("src.phase2.server:app", host="127.0.0.1", port=8765)
 
