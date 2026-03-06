@@ -2,7 +2,7 @@
 
 Collects and structures Amazon product reviews into clean JSON files ready for LLM analysis.
 
-Built in two phases: a **semi-automated HTML parser** (Phase 1, complete) and a **browser extension** that captures pages automatically (Phase 2).
+Built in two phases: a **semi-automated HTML parser** (Phase 1, complete) and a **Chrome extension + local server** (Phase 2, in progress) that scrapes reviews on demand with one click.
 
 ---
 
@@ -206,3 +206,5 @@ See [docs/ROADMAP.md](docs/ROADMAP.md).
 | EPIC-002 | HTML parser, storage & CLI | Complete |
 | EPIC-003 | Test suite | Complete |
 | EPIC-004 | Browser extension + local ingest server | Active |
+| EPIC-005 | Click-to-scrape with full star/page iteration | Pending |
+| EPIC-006 | Output to local Downloads folder | Pending |

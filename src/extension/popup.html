@@ -8,22 +8,56 @@
       font-size: 13px;
       margin: 0;
       padding: 12px 16px;
-      min-width: 220px;
+      min-width: 240px;
       color: #1a1a1a;
     }
     h1 { font-size: 13px; margin: 0 0 10px; font-weight: 600; }
-    .row { display: flex; justify-content: space-between; margin: 4px 0; }
+    .row { display: flex; justify-content: space-between; align-items: center; margin: 4px 0; }
     .label { color: #555; }
     .value { font-weight: 500; }
     .error { color: #c0392b; }
     .ok { color: #27ae60; }
-    .muted { color: #888; font-size: 11px; margin-top: 10px; }
-    #status { margin-bottom: 8px; }
+    .running { color: #2196F3; }
+    .muted { color: #888; font-size: 11px; margin-top: 8px; }
+    hr { border: none; border-top: 1px solid #eee; margin: 10px 0; }
+    button {
+      cursor: pointer;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 4px 10px;
+      font-size: 12px;
+      background: #f5f5f5;
+    }
+    button.primary {
+      background: #FF9900;
+      border-color: #e88a00;
+      color: #fff;
+      font-weight: 600;
+    }
+    button.primary:hover { background: #e88a00; }
+    button:hover:not(.primary) { background: #e8e8e8; }
+    #settingsRow { display: flex; align-items: center; gap: 6px; }
+    #maxPages {
+      width: 44px;
+      padding: 2px 4px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+    code { font-size: 11px; background: #f0f0f0; padding: 1px 4px; border-radius: 2px; }
   </style>
 </head>
 <body>
   <h1>Amazon Review Scraper</h1>
   <div id="content">Loading…</div>
+  <hr>
+  <div class="row">
+    <span class="label">Max pages / &#9733;</span>
+    <div id="settingsRow">
+      <input id="maxPages" type="number" min="1" max="20" value="5">
+      <button id="saveSettings">Save</button>
+    </div>
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>

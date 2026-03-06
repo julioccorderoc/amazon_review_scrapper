@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Amazon Review Scraper",
   "version": "1.0",
-  "description": "Auto-ingests Amazon review pages into the local scraper server.",
-  "permissions": ["storage"],
+  "description": "Click-to-scrape Amazon reviews into the local ingest server.",
+  "permissions": ["storage", "tabs", "downloads"],
   "host_permissions": [
     "*://*.amazon.com/*",
     "http://localhost:8765/*"
@@ -11,13 +11,6 @@
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": ["*://*.amazon.com/*product-reviews/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "action": {
     "default_title": "Amazon Review Scraper",
     "default_popup": "popup.html"

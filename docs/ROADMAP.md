@@ -1,7 +1,7 @@
 # ROADMAP
 
 * **Version:** 0.1.0
-* **Last Updated:** 2026-03-05
+* **Last Updated:** 2026-03-05 (EPIC-005/006 added)
 * **Primary Human Owner:** juliocordero
 
 ## Operating Rules for the Planner Agent
@@ -62,3 +62,30 @@
   * Local server (`uv run main.py serve`) starts on `localhost:8765`, receives the POST, and upserts reviews into `output/{ASIN}.json`.
   * `uv run main.py list` reflects new reviews within 5 seconds of the page load.
   * Visiting multiple star-filter pages for the same product correctly accumulates all reviews without duplicates.
+
+### EPIC-005 — Phase 2: Click-to-Scrape with Full Star/Page Iteration
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-004
+* **Business Objective:** Replace passive page-capture with an on-demand workflow: the user clicks the extension icon once on any Amazon product page and the extension automatically collects all reviews across all star ratings and all pagination pages — without the user having to navigate anywhere.
+* **Technical Boundary:** The background service worker receives a `START_SCRAPE` message from the popup and fetches Amazon review URLs directly (using `host_permissions`), bypassing the SPA pagination problem entirely. The content script is removed. A progress state is stored in `chrome.storage.local` and rendered by the popup in real time. Entry point is any Amazon product or review page; the ASIN is parsed from the active tab URL. A configurable `maxPages` setting (default: **5 pages per star filter**, stored in `chrome.storage.local`) caps the pagination depth and is adjustable from the popup UI.
+* **Verification Criteria (Definition of Done):**
+  * Clicking the "Scrape this product" button in the popup on `https://www.amazon.com/dp/{ASIN}` (or any `/product-reviews/{ASIN}` URL) starts scraping.
+  * The background worker iterates stars 1–5, and for each star fetches pages 1 … `maxPages` or until a page returns 0 reviews.
+  * The default max pages is 5 (≤ 50 reviews per star, ≤ 250 total). The user can change this in the popup settings row.
+  * The popup shows live progress: current star, current page, and running total of reviews added.
+  * Navigating away from the page mid-scrape does not cancel the operation.
+  * All reviews are deduplicated; re-clicking on the same product adds 0 duplicates.
+  * `uv run main.py list` reflects the full accumulation after the click completes.
+
+### EPIC-006 — Phase 2: Output to Local Downloads Folder
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-005
+* **Business Objective:** Deliver scraped data directly to the user's standard Downloads folder so no terminal navigation is needed to find the output file.
+* **Technical Boundary:** Add a `GET /output/{asin}` endpoint to the FastAPI server that serves the stored JSON. After a full scrape completes, the extension calls `chrome.downloads.download()` pointing at that endpoint, causing Chrome to save `{ASIN}.json` to the OS Downloads folder. The server's internal `output/` directory is unchanged and continues to act as the dedup store. Requires `"downloads"` permission in `manifest.json`.
+* **Verification Criteria (Definition of Done):**
+  * After clicking the extension and scraping completes, Chrome automatically saves `{ASIN}.json` to `~/Downloads/`.
+  * Re-running a scrape overwrites the existing download file (same filename).
+  * The popup confirms the download path.
+  * `uv run main.py list` and the downloaded file show identical review counts.
