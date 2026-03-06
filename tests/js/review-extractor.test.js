@@ -4,7 +4,11 @@ const { JSDOM } = require("jsdom");
 const { readFileSync } = require("fs");
 const { resolve } = require("path");
 
-// Load the extractor script once — it is re-eval'd per test so each run gets a clean DOM.
+// Load scripts once — both are re-eval'd per test so each run gets a clean DOM.
+const LOCALES_SCRIPT = readFileSync(
+  resolve(__dirname, "../../src/extension/locales.js"),
+  "utf8"
+);
 const SCRIPT = readFileSync(
   resolve(__dirname, "../../src/extension/review-extractor.js"),
   "utf8"
@@ -12,13 +16,14 @@ const SCRIPT = readFileSync(
 const FIXTURE_DIR = resolve(__dirname, "fixtures");
 
 /**
- * Evaluate review-extractor.js inside a JSDOM environment built from a fixture file.
+ * Evaluate locales.js + review-extractor.js inside a JSDOM environment built from a fixture file.
  * @param {string} file        - filename inside tests/js/fixtures/
  * @param {string} [url]       - page URL (determines pathname + ASIN extraction)
  */
 function run(file, url = "https://www.amazon.com/product-reviews/B08HHQWBBZ/") {
   const html = readFileSync(resolve(FIXTURE_DIR, file), "utf8");
   const dom = new JSDOM(html, { url, runScripts: "dangerously" });
+  dom.window.eval(LOCALES_SCRIPT); // inject locale registry before the extractor
   return dom.window.eval(SCRIPT);
 }
 
@@ -195,5 +200,35 @@ describe("Review skipped when no .a-profile-name (no_reviewer_name.html)", () =>
 
   test("reviews is empty", () => {
     expect(result.reviews).toHaveLength(0);
+  });
+});
+
+// ── Language auto-detection (EPIC-017) ───────────────────────────────────────
+
+describe("Language auto-detection", () => {
+  test("detects lang=es and logs [ARS] detected lang=es → locale=es", () => {
+    const html = readFileSync(resolve(FIXTURE_DIR, "es_standard.html"), "utf8");
+    const dom = new JSDOM(html, {
+      url: "https://www.amazon.com/product-reviews/B08HHQWBBZ/",
+      runScripts: "dangerously",
+    });
+    const logs = [];
+    dom.window.console.log = (...args) => logs.push(args.join(" "));
+    dom.window.eval(LOCALES_SCRIPT);
+    dom.window.eval(SCRIPT);
+    expect(logs.some(l => l.includes("[ARS] detected lang=es") && l.includes("locale=es"))).toBe(true);
+  });
+
+  test("falls back to waterfall when lang attribute is absent", () => {
+    const html = readFileSync(resolve(FIXTURE_DIR, "en_standard.html"), "utf8");
+    const dom = new JSDOM(html, {
+      url: "https://www.amazon.com/product-reviews/B08HHQWBBZ/",
+      runScripts: "dangerously",
+    });
+    const logs = [];
+    dom.window.console.log = (...args) => logs.push(args.join(" "));
+    dom.window.eval(LOCALES_SCRIPT);
+    dom.window.eval(SCRIPT);
+    expect(logs.some(l => l.includes("[ARS] detected lang=") && l.includes("locale=waterfall"))).toBe(true);
   });
 });

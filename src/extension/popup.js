@@ -75,11 +75,13 @@ function render(state) {
 
   if (!staleResult && state.status === "done") {
     const ago = state.ts ? formatAgo(state.ts) : "";
+    const fmt = state.exportFormat || "json";
     el.innerHTML = `
       <div class="row"><span class="label">ASIN</span><span class="value">${state.asin ?? "—"}</span></div>
       <div class="row"><span class="label">Added this session</span><span class="value ok">+${state.totalAdded ?? 0}</span></div>
       <div class="row"><span class="label">Total stored</span><span class="value">${state.total ?? 0}</span></div>
-      <p class="muted">Saved to ~/Downloads/${state.asin}.json · ${ago}</p>
+      <p class="muted">Saved to ~/Downloads/${state.asin}.${fmt} · ${ago}</p>
+      ${state.storageWarning ? `<p class="error" style="font-size:11px;">&#x26A0; ${state.storageWarning}</p>` : ""}
       ${tabAsin ? `<button id="scrapeBtn" class="primary" style="width:100%;margin-top:8px;">Scrape again</button>` : ""}
     `;
     attachScrapeBtn();
@@ -99,17 +101,33 @@ function render(state) {
   el.innerHTML = tabAsin
     ? `
       <div class="row"><span class="label">ASIN</span><span class="value">${tabAsin}</span></div>
-      <button id="scrapeBtn" class="primary" style="width:100%;margin-top:8px;">Scrape this product</button>
+      ${state.storedCount > 0
+        ? `<div class="row"><span class="label">Previously collected</span><span class="value">${state.storedCount} reviews</span></div>`
+        : ""}
+      ${state.storageWarning ? `<p class="error" style="font-size:11px;">&#x26A0; ${state.storageWarning}</p>` : ""}
+      <button id="scrapeBtn" class="primary" style="width:100%;margin-top:8px;">${state.storedCount > 0 ? "Scrape more" : "Scrape this product"}</button>
+      ${state.storedCount > 0 ? `<button id="clearBtn" style="width:100%;margin-top:6px;font-size:11px;color:#c0392b;border-color:#c0392b;">Clear stored reviews</button>` : ""}
     `
     : `<p class="muted">Navigate to an Amazon product page (amazon.com/dp/… or /product-reviews/…), then click here.</p>`;
   attachScrapeBtn();
+  const clearBtnEl = document.getElementById("clearBtn");
+  if (clearBtnEl && tabAsin) {
+    clearBtnEl.addEventListener("click", () => {
+      chrome.storage.local.remove(`reviews:${tabAsin}`, () => refresh());
+    });
+  }
 }
 
 function refresh() {
-  chrome.storage.local.get(
-    ["status", "star", "page", "added", "asin", "total", "totalAdded", "ts", "error", "selectedStars", "maxPages"],
-    render
-  );
+  const tabAsin = extractAsin(currentTabUrl);
+  const keys = ["status", "star", "page", "added", "asin", "total", "totalAdded", "ts", "error", "selectedStars", "maxPages", "storageWarning", "exportFormat"];
+  if (tabAsin) keys.push(`reviews:${tabAsin}`);
+  chrome.storage.local.get(keys, (state) => {
+    // Normalize the dynamic reviews:{ASIN} key into a fixed property for render().
+    const reviewsObj = tabAsin ? state[`reviews:${tabAsin}`] : null;
+    state.storedCount = reviewsObj ? Object.keys(reviewsObj).length : 0;
+    render(state);
+  });
 }
 
 // Do NOT call refresh() here. The tabs.query callback above fires within ~20ms
@@ -155,4 +173,13 @@ document.getElementById("saveSettings").addEventListener("click", () => {
     btn.textContent = "Saved!";
     setTimeout(() => (btn.textContent = "Save"), 1500);
   }
+});
+
+// Settings — export format
+chrome.storage.local.get("exportFormat", ({ exportFormat }) => {
+  document.getElementById("exportFormatSel").value = exportFormat || "json";
+});
+
+document.getElementById("exportFormatSel").addEventListener("change", () => {
+  chrome.storage.local.set({ exportFormat: document.getElementById("exportFormatSel").value });
 });

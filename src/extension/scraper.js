@@ -8,6 +8,33 @@ import { extractReviews } from "./extractor.js";
 const STARS = ["one", "two", "three", "four", "five"];
 const DEFAULT_MAX_PAGES = 5;
 
+// ── Export serializers ─────────────────────────────────────────────────────────
+
+const CSV_FIELDS = [
+  "review_id", "reviewer_name", "rating", "title", "body",
+  "date", "country", "verified_purchase", "helpful_votes", "scraped_at",
+];
+
+function serializeCSV(reviews) {
+  function csvCell(val) {
+    if (val == null) return "";
+    let s = String(val).replace(/\r?\n/g, "\\n"); // keep each row single-line in Excel
+    if (s.includes(",") || s.includes('"')) {
+      s = '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }
+  const rows = [CSV_FIELDS.join(",")];
+  for (const r of reviews) {
+    rows.push(CSV_FIELDS.map(f => csvCell(r[f])).join(","));
+  }
+  return "\uFEFF" + rows.join("\r\n"); // BOM + CRLF for correct Excel UTF-8 handling
+}
+
+function serializeJSONL(reviews) {
+  return reviews.map(r => JSON.stringify(r)).join("\n");
+}
+
 export function extractAsin(url) {
   if (!url) return null;
   let m = url.match(/\/dp\/([A-Z0-9]{10})/);
@@ -15,6 +42,41 @@ export function extractAsin(url) {
   m = url.match(/\/product-reviews\/([A-Z0-9]{10})/);
   if (m) return m[1];
   return null;
+}
+
+// ── Persistent storage helpers ─────────────────────────────────────────────────
+
+// Load previously accumulated reviews for an ASIN from chrome.storage.local.
+// Returns a Map<review_id, review> pre-populated with prior sessions' data.
+async function loadStoredReviews(asin) {
+  const key = `reviews:${asin}`;
+  const stored = await chrome.storage.local.get(key);
+  const reviewsObj = stored[key];
+  return reviewsObj ? new Map(Object.entries(reviewsObj)) : new Map();
+}
+
+// Upsert the current allReviews Map into chrome.storage.local.
+// Checks quota before writing and stores a storageWarning when usage exceeds 80%.
+async function persistReviews(asin, allReviews) {
+  if (allReviews.size === 0) return;
+  const key = `reviews:${asin}`;
+  try {
+    const quota = chrome.storage.local.QUOTA_BYTES ?? 10485760;
+    const bytesInUse = await chrome.storage.local.getBytesInUse(null);
+    if (bytesInUse / quota > 0.8) {
+      await chrome.storage.local.set({
+        storageWarning: "Storage is over 80% full. Download and clear stored reviews to free space.",
+      });
+    } else {
+      await chrome.storage.local.remove("storageWarning");
+    }
+    await chrome.storage.local.set({ [key]: Object.fromEntries(allReviews) });
+  } catch (err) {
+    console.error("[ARS] persistReviews failed:", err.message);
+    await chrome.storage.local.set({
+      storageWarning: "Storage quota exceeded. Download and clear stored reviews to free space.",
+    });
+  }
 }
 
 export async function startScrape(url, tabId) {
@@ -33,18 +95,22 @@ export async function startScrape(url, tabId) {
   const { status } = await chrome.storage.local.get("status");
   if (status === "running") return;
 
-  const { maxPages: storedMax, selectedStars: storedStars } =
-    await chrome.storage.local.get(["maxPages", "selectedStars"]);
+  const { maxPages: storedMax, selectedStars: storedStars, exportFormat: storedFormat } =
+    await chrome.storage.local.get(["maxPages", "selectedStars", "exportFormat"]);
   const maxPages =
     typeof storedMax === "number" && storedMax > 0 ? storedMax : DEFAULT_MAX_PAGES;
   const starsToScrape =
     Array.isArray(storedStars) && storedStars.length > 0 ? storedStars : STARS;
+  const exportFormat =
+    storedFormat === "jsonl" || storedFormat === "csv" ? storedFormat : "json";
 
   chrome.action.setBadgeText({ text: "…", tabId });
   chrome.action.setBadgeBackgroundColor({ color: "#2196F3", tabId });
 
-  const allReviews = new Map();
-  let totalAdded = 0;
+  // Pre-populate with any reviews collected in previous sessions.
+  const allReviews = await loadStoredReviews(asin);
+  const priorCount = allReviews.size;
+  let totalAdded = 0; // net new reviews added this session only
   let captchaError = null;
   let firstStar = true;
 
@@ -138,6 +204,9 @@ export async function startScrape(url, tabId) {
           chrome.tabs.remove(scrapeTabId, () => void chrome.runtime.lastError);
         }
       }
+
+      // Persist after each star so reviews survive browser close / extension reload.
+      await persistReviews(asin, allReviews);
     }
 
     if (captchaError) {
@@ -150,15 +219,28 @@ export async function startScrape(url, tabId) {
     await chrome.storage.local.set({
       status: "done",
       asin,
-      totalAdded: allReviews.size,
+      totalAdded,                 // new reviews added this session
+      total: allReviews.size,     // cumulative total including prior sessions
       ts: Date.now(),
     });
     chrome.action.setBadgeText({ text: String(allReviews.size), tabId });
     chrome.action.setBadgeBackgroundColor({ color: "#4CAF50", tabId });
 
+    const reviews = [...allReviews.values()];
+    let content, mimeType;
+    if (exportFormat === "jsonl") {
+      content = serializeJSONL(reviews);
+      mimeType = "text/plain";
+    } else if (exportFormat === "csv") {
+      content = serializeCSV(reviews);
+      mimeType = "text/csv";
+    } else {
+      content = JSON.stringify(reviews, null, 2);
+      mimeType = "application/json";
+    }
     chrome.downloads.download({
-      url: "data:application/json;charset=utf-8," + encodeURIComponent(JSON.stringify([...allReviews.values()], null, 2)),
-      filename: `${asin}.json`,
+      url: `data:${mimeType};charset=utf-8,` + encodeURIComponent(content),
+      filename: `${asin}.${exportFormat}`,
       saveAs: false,
     });
   } catch (err) {

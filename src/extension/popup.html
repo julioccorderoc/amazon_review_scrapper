@@ -46,6 +46,12 @@
     }
     #starsRow { display: flex; gap: 10px; margin-top: 4px; }
     #starsRow label { display: flex; align-items: center; gap: 3px; cursor: pointer; color: #555; }
+    #exportFormatSel {
+      padding: 2px 4px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      font-size: 12px;
+    }
     code { font-size: 11px; background: #f0f0f0; padding: 1px 4px; border-radius: 2px; }
   </style>
 </head>
@@ -62,6 +68,14 @@
       <label><input type="checkbox" class="star-cb" value="four" checked> 4&#9733;</label>
       <label><input type="checkbox" class="star-cb" value="five" checked> 5&#9733;</label>
     </div>
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <span class="label">Export format</span>
+    <select id="exportFormatSel">
+      <option value="json">JSON</option>
+      <option value="jsonl">JSONL</option>
+      <option value="csv">CSV</option>
+    </select>
   </div>
   <div class="row" style="margin-top:8px;">
     <span class="label">Max pages</span>

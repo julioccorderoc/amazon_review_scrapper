@@ -13,7 +13,7 @@ export function extractReviews(tabId) {
       chrome.scripting.executeScript(
         {
           target: { tabId },
-          files: ["review-extractor.js"],
+          files: ["locales.js", "review-extractor.js"],
         },
         (results) => {
           if (chrome.runtime.lastError || !results?.[0]?.result) {

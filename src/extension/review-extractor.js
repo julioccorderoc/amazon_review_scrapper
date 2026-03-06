@@ -1,66 +1,54 @@
-// Content script injected by executeScript({ files: ["review-extractor.js"] }).
+// Content script injected by executeScript({ files: ["locales.js", "review-extractor.js"] }).
 // Runs inside the live Amazon review tab's browsing context.
 // The IIFE's return value is what executeScript resolves with.
 // Shape: { asin, reviews[], hasCaptcha, hasLoginWall, isWrongPage, _url, _title }
+//
+// ARS_LOCALES is provided by locales.js, which is injected first.
 
 (function () {
   function normalize(text) {
     return text.replace(/\s+/g, " ").trim();
   }
 
-  // ── Locale data ───────────────────────────────────────────────────────────
+  // ── Date parsing ───────────────────────────────────────────────────────────
 
-  const DATE_PATTERNS = [
-    /Reviewed in (.+?) on (.+)/,                                                    // English
-    /(?:Revisado|Reseñado|Calificado|Valorado|Evaluado|Opinado) en (.+?) el (.+)/i, // Spanish (explicit verbs)
-    /\w+ en (.+?) el (\d.+)/,                                                       // Spanish generic catch-all
-    /Avaliado n[oa] (.+?) em (.+)/,                                                 // Portuguese
-    /Évalué en (.+?) le (.+)/,                                                      // French
-    /Rezensiert in (.+?) am (.+)/,                                                  // German
-    /Recensito in (.+?) il (.+)/,                                                   // Italian
-  ];
-
-  const SPANISH_MONTHS = {
-    enero: "January", febrero: "February", marzo: "March", abril: "April",
-    mayo: "May", junio: "June", julio: "July", agosto: "August",
-    septiembre: "September", octubre: "October", noviembre: "November", diciembre: "December",
-  };
-
-  const PORTUGUESE_MONTHS = {
-    janeiro: "January", fevereiro: "February", março: "March", abril: "April",
-    maio: "May", junho: "June", julho: "July", agosto: "August",
-    setembro: "September", outubro: "October", novembro: "November", dezembro: "December",
-  };
-
-  const HELPFUL_PATTERNS = [
-    // English: "12 people found this helpful" / "One person found this helpful"
-    { re: /^(\d+|[Oo]ne)\s+(?:people?|person)\s+found/i,
-      parse: (m) => m[1].toLowerCase() === "one" ? 1 : parseInt(m[1], 10) },
-    // Spanish: "A 12 personas les pareció útil" / "A una persona le pareció útil"
-    { re: /A\s+(\d+|una)\s+persona/i,
-      parse: (m) => m[1].toLowerCase() === "una" ? 1 : parseInt(m[1], 10) },
-    // Portuguese: "12 pessoas acharam isso útil"
-    { re: /^(\d+)\s+pessoa/i,
-      parse: (m) => parseInt(m[1], 10) },
-    // French: "12 personnes ont trouvé cela utile"
-    { re: /^(\d+)\s+personne/i,
-      parse: (m) => parseInt(m[1], 10) },
-  ];
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
-  function parseLocalizedDate(s) {
+  // Parse a date string to a Date object using an optional month name map.
+  // monthMap: { localMonthName: "EnglishMonthName" } | null
+  // Returns a Date, or null if unparseable.
+  function parseLocalizedDate(s, monthMap) {
     let d = new Date(s); // works for English ("October 15, 2023")
     if (!isNaN(d.getTime())) return d;
-    // "15 de octubre de 2023" / "15 de octubre del 2023" / "15 de outubro de 2023"
-    const m = s.match(/(\d{1,2})\s+de\s+(\w+)\s+del?\s+(\d{4})/);
-    if (m) {
-      const month = SPANISH_MONTHS[m[2].toLowerCase()] || PORTUGUESE_MONTHS[m[2].toLowerCase()];
-      if (month) { d = new Date(`${month} ${m[1]}, ${m[3]}`); }
-      if (!isNaN(d.getTime())) return d;
+    if (monthMap) {
+      // "15 de octubre de 2023" / "15 de octubre del 2023" / "15 de outubro de 2023"
+      const m = s.match(/(\d{1,2})\s+de\s+(\w+)\s+del?\s+(\d{4})/);
+      if (m) {
+        const month = monthMap[m[2].toLowerCase()];
+        if (month) { d = new Date(`${month} ${m[1]}, ${m[3]}`); }
+        if (!isNaN(d.getTime())) return d;
+      }
     }
     return null;
   }
+
+  // ── Language auto-detection (EPIC-017) ────────────────────────────────────
+
+  const lang = document.documentElement.lang || "";
+  const detectedLocale = ARS_LOCALES.find(l => lang.toLowerCase().startsWith(l.code));
+  console.log(`[ARS] detected lang=${lang} → locale=${detectedLocale ? detectedLocale.code : "waterfall"}`);
+
+  // Flat entry lists built from all locales — used when auto-detection misses.
+  const ALL_DATE_ENTRIES = ARS_LOCALES.flatMap(
+    l => l.datePatterns.map(pattern => ({ pattern, monthMap: l.monthMap }))
+  );
+  const ALL_HELPFUL_PATTERNS = ARS_LOCALES.flatMap(l => l.helpfulPatterns);
+
+  // Active lists: prefer detected locale; fall back to full waterfall.
+  const DATE_ENTRIES = detectedLocale
+    ? detectedLocale.datePatterns.map(p => ({ pattern: p, monthMap: detectedLocale.monthMap }))
+    : ALL_DATE_ENTRIES;
+  const HELPFUL_PATTERNS = detectedLocale
+    ? detectedLocale.helpfulPatterns
+    : ALL_HELPFUL_PATTERNS;
 
   // ── Extraction ────────────────────────────────────────────────────────────
 
@@ -122,21 +110,20 @@
     const body = bodyEl ? (bodyEl.innerText ?? bodyEl.textContent).trim() : "";
     if (!body) continue;
 
-    // date & country — try multiple Amazon UI locales.
-    // Amazon renders dates in the browser's language, so a Chrome set to
-    // Spanish shows "Calificado en … el 15 de octubre de 2023" instead of
-    // "Reviewed in … on October 15, 2023". We try several patterns and
-    // never skip the review if none match — date is non-blocking.
+    // date & country — try the detected locale's patterns; fall back to the full waterfall.
+    // Amazon renders dates in the browser's language, so a Chrome set to Spanish shows
+    // "Calificado en … el 15 de octubre de 2023" instead of "Reviewed in … on October 15, 2023".
+    // Date is non-blocking: if no pattern matches, the review is still included with date: null.
     let date = null;
     let country = "";
     const dateEl = li.querySelector('[data-hook="review-date"]');
     if (dateEl) {
       const dateText = normalize(dateEl.textContent);
-      for (const pattern of DATE_PATTERNS) {
+      for (const { pattern, monthMap } of DATE_ENTRIES) {
         const m = dateText.match(pattern);
         if (m) {
           country = m[1].trim();
-          const parsed = parseLocalizedDate(m[2].trim());
+          const parsed = parseLocalizedDate(m[2].trim(), monthMap);
           // Store ISO date if parseable; raw text otherwise — never null out the review
           date = parsed ? parsed.toISOString().slice(0, 10) : m[2].trim();
           break;
