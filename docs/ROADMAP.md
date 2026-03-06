@@ -215,3 +215,144 @@
   * Downloaded JSON contains all 10 fields, no duplicate `review_id`s across pages — confirmed.
   * No red banner appears when the popup opens — confirmed.
   * `uv run pytest` — all 21 tests still pass — confirmed.
+
+---
+
+### EPIC-014 — Modularize Extension: files: Injection + ES Modules
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-013
+* **Business Objective:** Make the extension codebase maintainable. The current `background.js` is a single 600-line file mixing tab management, icon drawing, scrape orchestration, review extraction, and Chrome event wiring. Separating concerns makes each piece readable, independently changeable, and testable.
+* **Technical Boundary:** `src/extension/` only. No Python changes. No user-visible behaviour changes.
+* **Planned deliverables:**
+  * Add `"type": "module"` to the background service worker declaration in `manifest.json` so `background.js` can use `import`/`export`.
+  * Split background.js into ES modules:
+    * `tab-utils.js` — `openTabAndLoad`, `clickNextPage`, `waitForReviewsToChange`, `waitForReviewsToAppear`
+    * `icons.js` — `drawTabIcon`, `setTabIcon`
+    * `scraper.js` — `startScrape`, `extractAsin`
+    * `background.js` — Chrome event listeners only; imports from the above
+  * Move the review extractor out of the inline `func:` string into `review-extractor.js` (a standalone content script). Switch `extractReviews` from `func:` to `files: ["review-extractor.js"]` injection. The file must assign its result to a well-known global or use `chrome.runtime.sendMessage` — whichever `executeScript` + `files:` requires.
+  * `review-extractor.js` exports nothing at the module level (it runs as a content script); its logic is fully self-contained.
+* **Verification Criteria (Definition of Done):**
+  * Extension loads in Chrome without errors after the split.
+  * Full English scrape produces identical output to pre-split (same fields, same counts).
+  * Full Spanish scrape (Chrome UI set to Spanish) produces correct `rating`, `date`, `country`, `helpful_votes`.
+  * `uv run pytest` — all 21 tests still pass.
+
+---
+
+### EPIC-015 — JS Test Suite for review-extractor.js
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-014
+* **Business Objective:** Give the JS extractor the same regression safety net the Python parser has. Currently every locale fix requires a manual reload-and-check cycle. Automated tests catch regressions in seconds.
+* **Technical Boundary:** New `tests/js/` directory. No changes to Python code or extension runtime behaviour.
+* **Planned deliverables:**
+  * Add Jest + jsdom as dev dependencies (`package.json`).
+  * Create `tests/js/fixtures/` with minimal HTML files mirroring `tests/fixtures/` for the Python suite — at minimum: English review page, Spanish review page (using `spanish_page.html` as the source of truth).
+  * Write `tests/js/review-extractor.test.js` covering:
+    * Standard English review — all 10 fields correct
+    * Spanish review — `rating`, `date`, `country`, `helpful_votes` all correct
+    * Rating CSS class fallback (no `span.a-icon-alt`)
+    * `helpful_votes` = 0 when element absent
+    * `helpful_votes` > 0 for each supported locale pattern
+    * `hasCaptcha` detection
+    * `isWrongPage` detection
+    * No `review_id` → review skipped
+    * No `reviewer_name` → review skipped
+  * `npm test` passes with zero failures.
+* **Verification Criteria (Definition of Done):**
+  * `npm test` runs the JS suite; zero failures.
+  * `uv run pytest` still passes (Python suite unchanged).
+  * Adding a new HTML fixture + test case for a new locale is a self-contained change in `tests/js/`.
+
+---
+
+### EPIC-016 — Locale Registry
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-014
+* **Business Objective:** Eliminate the need to hunt through scattered regex arrays when adding a new Amazon locale. Every locale-specific piece of knowledge lives in one place; adding support for a new language is a single self-contained addition.
+* **Technical Boundary:** `review-extractor.js` (created in EPIC-014) and a new `locales.js` file. No Python changes. No new locales are added in this epic — only refactoring existing ones.
+* **Planned deliverables:**
+  * Create `src/extension/locales.js` with a `LOCALES` array. Each entry is an object:
+
+    ```js
+    {
+      code: "es",                  // BCP-47 language code (matches document.documentElement.lang)
+      datePattern: /(?:Revisado|Calificado|...) en (.+?) el (.+)/i,
+      monthMap: { enero: "January", ... },  // null for languages where new Date(s) works natively
+      helpfulPattern: { re: /A\s+(\d+|una)\s+persona/i, parse: (m) => ... },
+    }
+    ```
+
+  * `review-extractor.js` imports `LOCALES` and iterates it instead of maintaining its own inline arrays.
+  * A `LOCALES.md` (in `src/extension/`) documents the registry shape and gives a step-by-step example for adding a new locale (what fields to fill in, how to find the date pattern on a live Amazon page, how to write a test fixture).
+  * All currently supported locales (English, Spanish, Portuguese, French, German, Italian) are migrated into the registry — no new languages, no behaviour change.
+* **Verification Criteria (Definition of Done):**
+  * English and Spanish scrapes produce identical output to pre-refactor.
+  * `npm test` (EPIC-015) — all JS tests pass.
+  * `uv run pytest` — all 21 Python tests pass.
+  * `LOCALES.md` documents: how to find a date pattern, how to add a month map, how to write the test fixture, and how to verify with a real Amazon page.
+
+---
+
+### EPIC-017 — Language Auto-detection
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-016
+* **Business Objective:** Instead of trying every locale pattern in a waterfall until one matches, detect the page language upfront and go straight to the right locale. Faster, more predictable, easier to debug.
+* **Technical Boundary:** `review-extractor.js` only.
+* **Planned deliverables:**
+  * Read `document.documentElement.lang` (e.g. `"es"`, `"es-US"`, `"en-US"`) at the start of extraction.
+  * Match the language tag (prefix match on the `code` field) to a `LOCALES` entry. Fall back to the full waterfall if no match is found (graceful degradation for unlisted locales).
+  * Log the detected locale to the console: `[ARS] detected lang=es → locale=es`.
+  * The waterfall (current behaviour) remains as a fallback so pages with a missing or unexpected `lang` attribute still work.
+* **Verification Criteria (Definition of Done):**
+  * Console shows `[ARS] detected lang=…` on every scrape.
+  * Spanish page resolves via direct lookup (not waterfall) — confirmed by log showing first pattern tried is the Spanish one.
+  * English page still works correctly.
+  * `npm test` and `uv run pytest` both pass.
+
+---
+
+### EPIC-018 — Persist Reviews Across Sessions
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-013
+* **Business Objective:** Reviews accumulate across scrape sessions rather than being lost when the browser closes or the extension is reloaded. Re-scraping a product with new reviews only adds the delta. Coworkers can scrape a product over several days and get a complete dataset.
+* **Technical Boundary:** `background.js` (`startScrape`), `popup.js`, `popup.html`. No Python changes.
+* **Planned deliverables:**
+  * After each star filter completes, upsert that star's reviews into `chrome.storage.local` under key `reviews:{ASIN}` (a JSON object keyed by `review_id`). This is the persistent store.
+  * On scrape start, load any existing reviews for the ASIN from storage into `allReviews` before beginning, so the Map already contains prior sessions' data.
+  * Popup idle state shows a "Previously collected: N reviews" line for the current tab's ASIN if stored reviews exist.
+  * The downloaded JSON at the end of a scrape reflects the full accumulated set (prior + new), not just the current session.
+  * A "Clear stored reviews for this product" button in the popup allows resetting without re-installing the extension.
+  * Note: `chrome.storage.local` has a 10 MB quota. For very large products (thousands of reviews), the upsert should check remaining quota and warn the user rather than silently failing.
+* **Verification Criteria (Definition of Done):**
+  * Scrape product A (get 50 reviews). Close Chrome. Reopen. Scrape product A again (same 10 reviews on page 1, 10 new on page 2). Downloaded JSON contains 60 reviews, not 10 or 20.
+  * Popup idle state shows "Previously collected: 50 reviews" before the second scrape.
+  * "Clear" button removes stored reviews; subsequent idle state shows no count.
+  * `uv run pytest` — all 21 tests pass.
+
+---
+
+### EPIC-019 — Export Formats (CSV and JSONL)
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-013
+* **Business Objective:** Most coworkers analyze data in Excel or Google Sheets, not JSON viewers. Offering CSV removes a manual conversion step. JSONL (one review per line) is the format the Python pipeline already uses and is easier to stream into LLM tools.
+* **Technical Boundary:** `background.js` (download logic), `popup.html`, `popup.js`. No Python changes.
+* **Planned deliverables:**
+  * Add a format selector to the popup (radio or dropdown): JSON / CSV / JSONL. Default: JSON (preserves current behaviour). Selection is persisted in `chrome.storage.local` under key `exportFormat`.
+  * In `startScrape`, after accumulating all reviews, serialize to the chosen format before building the `data:` URI:
+    * **JSON** — existing behaviour (`JSON.stringify` with 2-space indent).
+    * **JSONL** — one `JSON.stringify(review)` per line, no indent, `\n` separator.
+    * **CSV** — header row matching the 10 field names; one row per review; values quoted if they contain commas or newlines; `body` newlines replaced with `\n` literal so the cell stays single-row in Excel.
+  * Filename uses the correct extension: `{ASIN}.json`, `{ASIN}.jsonl`, `{ASIN}.csv`.
+* **Verification Criteria (Definition of Done):**
+  * Selecting CSV and scraping produces a file that opens correctly in Excel (all 10 columns, no broken rows from body newlines).
+  * Selecting JSONL produces a file where `wc -l` equals the review count.
+  * Selecting JSON produces identical output to the pre-epic behaviour.
+  * Format selection persists across popup open/close cycles.
+  * `uv run pytest` — all 21 tests pass.
