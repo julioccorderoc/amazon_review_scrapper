@@ -1,7 +1,7 @@
 # ROADMAP
 
-* **Version:** 0.2.0
-* **Last Updated:** 2026-03-05
+* **Version:** 0.3.0
+* **Last Updated:** 2026-03-06
 * **Primary Human Owner:** juliocordero
 
 ## Operating Rules for the Planner Agent
@@ -67,7 +67,7 @@
 * **Dependencies:** EPIC-004
 * **Business Objective:** One-click scrape: the user clicks the extension icon on any Amazon product page and the extension automatically collects all reviews across selected star ratings and pages without manual navigation.
 * **Technical Boundary:** Background service worker iterates stars × pages. Pagination is click-based (simulates clicking "Next" inside a live background tab) because Amazon loads review pages via client-side AJAX — `?pageNumber=N` in the URL is ignored by Amazon's server. Configurable `maxPages` (default 5) and star filter selection in the popup.
-* **Key implementation insight (BUG-006):** Amazon's server always returns page 1 content regardless of `?pageNumber=N`. Pages 2+ are only reachable by clicking the "Next" button inside a live browser tab, which triggers an AJAX update. The fix: one background tab per star filter; programmatic click on `.a-pagination li.a-last:not(.a-disabled) a`; 3 s settle delay for the AJAX to complete.
+* **Key implementation insight (BUG-006):** Amazon's server always returns page 1 content regardless of `?pageNumber=N`. Pages 2+ are only reachable by clicking the "Next" button inside a live browser tab, which triggers an AJAX update. The fix: one background tab per star filter; programmatic click on `.a-pagination li.a-last:not(.a-disabled) a`; DOM-polling settle for the AJAX to complete.
 * **Verification Criteria (Definition of Done):**
   * Clicking "Scrape this product" on `amazon.com/dp/{ASIN}` scrapes all selected stars and pages.
   * Pages 2+ return different review IDs from page 1 (confirmed via `first_ids` logging).
@@ -90,58 +90,82 @@
 
 ### EPIC-007 — Speed Optimization: DOM-Polling Settle
 
-* **Status:** `Pending`
+* **Status:** `Complete`
 * **Dependencies:** EPIC-005
-* **Business Objective:** Reduce full-scrape time from ~5–8 minutes to ~2–3 minutes without sacrificing reliability. The current `TAB_SETTLE_MS = 3000ms` fixed delay per page is conservative; Amazon's AJAX typically completes in under 1 second.
-* **Technical Boundary:** `background.js` only. Replace `await sleep(TAB_SETTLE_MS)` after each `clickNextPage` with a DOM-polling loop that detects when the first review ID has changed. Fall back to a 5-second hard timeout if the DOM never updates (CAPTCHA, last page, etc.).
+* **Business Objective:** Reduce full-scrape time from ~5–8 minutes to ~2–3 minutes without sacrificing reliability.
+* **Technical Boundary:** `background.js` only.
+* **What was done:**
+  * `TAB_SETTLE_MS` reduced from 3000 ms to 1500 ms (page-1 initial settle only).
+  * Added `waitForReviewsToChange(tabId, prevId, maxWaitMs=5000)` — polls `li[data-hook="review"]:first-child` id every 200 ms; resolves `"changed"` or `"timeout"`.
+  * After each `clickNextPage`, the scraper now waits for DOM change instead of sleeping a fixed duration.
 * **Verification Criteria (Definition of Done):**
-  * Effective per-page wait time is ≤ 1.5 s on a normal connection (measured via console timestamps).
+  * Console shows `reason=changed` within ~1 s for pages 2+; `reason=timeout` on over-page.
   * `first_ids` in server logs still differ between pages (correctness unchanged).
-  * The 5-second fallback timeout fires correctly when the "Next" button is clicked but no new reviews appear (tested by manually disabling AJAX in DevTools).
-  * `uv run pytest` — all 21 tests still pass.
+  * `uv run pytest` — all 21 tests pass.
 
 ### EPIC-008 — Robustness
 
-* **Status:** `Pending`
+* **Status:** `Complete`
 * **Dependencies:** EPIC-007
-* **Business Objective:** Make the scraper resilient to the real-world failure modes encountered during development: CAPTCHAs, per-star tab crashes, Amazon returning the same page twice, and transient server errors.
-* **Technical Boundary:** `background.js` and `src/phase2/server.py`.
-* **Planned improvements:**
-  * **CAPTCHA detection:** if `li[data-hook="review"]` is absent but a CAPTCHA element is present in the DOM, stop that star filter and surface a human-readable popup error ("Amazon showed a CAPTCHA — please solve it manually, then re-scrape").
-  * **Per-star error isolation:** wrap each star's tab lifecycle in its own `try/catch` so a tab crash or timeout on one star doesn't abort remaining stars.
-  * **Cycle detection:** if `first_ids` on the new page match the previous page's `first_ids`, treat it as end-of-pages and break.
-  * **Single retry:** on `executeScript` failure or server 5xx, retry once with a 2 s backoff.
+* **Business Objective:** Make the scraper resilient to real-world failure modes: CAPTCHAs, tab crashes, Amazon returning the same page twice, and transient `executeScript` failures.
+* **Technical Boundary:** `background.js` only.
+* **What was done:**
+  * **Per-star error isolation:** each star's tab lifecycle is wrapped in its own `try/catch`; a tab crash or timeout on one star logs and continues to the next.
+  * **Cycle detection:** after `extractHtml`, if the first review ID equals the previous page's first ID, the page loop breaks — Amazon has looped back to page 1.
+  * **CAPTCHA detection:** if no `data-hook="review"` elements are present and `"Enter the characters you see below"` is in the HTML, the star loop stops and a human-readable error is surfaced in the popup.
+  * **Single retry:** `extractHtml` and `clickNextPage` retry once after 2 s on `chrome.runtime.lastError`.
 * **Verification Criteria (Definition of Done):**
-  * Manually triggering a CAPTCHA (by scraping aggressively) shows a clear popup error message and does not corrupt stored data.
   * Killing a scrape tab mid-scrape causes that star to be skipped; remaining stars complete normally.
   * Re-scraping a product with only 1 page of reviews per star terminates at the correct page (no infinite cycle).
 
 ### EPIC-009 — Distribution / Packaging
 
-* **Status:** `Pending`
+* **Status:** `Complete`
 * **Dependencies:** EPIC-006
-* **Business Objective:** Enable non-technical coworkers to install and use the tool with minimal setup — no terminal commands beyond a single install step.
-* **Planned deliverables:**
-
-  **Short term (one afternoon):**
-  * `README.md` — top-level install guide with screenshots:
-    1. Clone the repo.
-    2. Install `uv` (one `curl` command).
-    3. Start the server: `uv run main.py serve`.
-    4. Install the extension: `chrome://extensions` → Load unpacked → `src/extension/`.
-    5. Navigate to an Amazon product page and click the extension icon.
-  * `start-server.sh` — convenience script that checks for `uv`, prints a helpful error if missing, then runs `uv run main.py serve`.
-
-  **Medium term (Chrome Web Store):**
-  * Publish the extension to the Chrome Web Store as a private group listing (visible only to invited Google accounts). Eliminates the need for developer mode in Chrome.
-  * Cost: $5 one-time developer registration fee.
-  * Timeline: 1–7 day review once submitted.
-
-  **Longer term (standalone binary):**
-  * Package the Python server as a native app using PyInstaller (macOS `.app` / Windows `.exe`) so coworkers with no Python experience can double-click to start the server.
-  * Bundle with an Electron or Tauri wrapper if a system-tray icon is desired.
-
+* **Business Objective:** Enable non-technical coworkers to install and use the tool with minimal setup.
+* **What was done:**
+  * `README.md` — rewritten for non-developer coworkers: prerequisites, 4-step install, usage, output, troubleshooting.
+  * `start-server.sh` — checks for `uv`, prints a helpful error if missing, runs `uv run main.py serve`. Executable.
+  * `serve_entry.py` — PyInstaller-compatible entry point (direct app import, `multiprocessing.freeze_support()`).
+  * `amazon_review_scraper.spec` — PyInstaller spec using `collect_all()` for uvicorn/fastapi/starlette/anyio; `--onefile` single binary output.
+  * `build-macos.sh` — builds the binary and generates `dist/Amazon Review Scraper Server.command` (double-click Terminal launcher).
+  * `build-windows.ps1` — builds `dist/amazon-review-scraper.exe` on Windows.
+  * `pyinstaller>=6.0` added to dev dependencies.
+* **Remaining (future):**
+  * Chrome Web Store private group listing (eliminates Developer mode requirement; $5 one-time fee, 1–7 day review).
 * **Verification Criteria (Definition of Done):**
-  * A coworker with no prior setup can install and run a full scrape following only the README.
-  * `start-server.sh` is executable and works on macOS and Linux out of the box.
-  * (Web Store milestone) Extension installs in Chrome without enabling developer mode.
+  * `./start-server.sh` starts the server on macOS; prints clear error when `uv` is not on PATH.
+  * `./build-macos.sh` produces `dist/amazon-review-scraper`; binary starts without Python on PATH.
+  * `uv run pytest` — all 21 tests pass.
+
+---
+
+### EPIC-010 — Sharing & Polish
+
+* **Status:** `Complete`
+* **Dependencies:** EPIC-009
+* **Business Objective:** Reduce friction for non-technical coworkers: surface server problems before they start scraping, show progress so the tool doesn't appear frozen, and reduce CAPTCHA frequency on back-to-back scrapes.
+* **What was done:**
+  * **Server health check** (`src/phase2/server.py`, `popup.html`, `popup.js`): `GET /health` endpoint added to the server. Popup pings it on open and every 1 s; a red banner appears immediately if the server is not reachable, and clears when it comes back up.
+  * **Progress bar** (`popup.js`): the running state now shows an orange progress bar and percentage computed from `(starIndex × maxPages + page − 1) / (totalStars × maxPages)`, capped at 99% until the "done" state fires.
+  * **Inter-star jitter** (`background.js`): `jitter(1000, 3000)` — a 1–3 s random pause between consecutive star filters — reduces CAPTCHA frequency on aggressive scrapes.
+* **Verification Criteria (Definition of Done):**
+  * Stop the server → open popup → red banner appears immediately.
+  * Start the server → banner clears within 1 s.
+  * Progress bar increments on each page during a multi-star scrape.
+  * Console shows ~1–3 s gap between the last `[ARS] star=X` log and the next star's `opening tab →`.
+  * `uv run pytest` — all 21 tests pass.
+
+---
+
+### EPIC-011 — Chrome Web Store Listing (Future)
+
+* **Status:** `Pending`
+* **Dependencies:** EPIC-010
+* **Business Objective:** Remove the Chrome Developer mode requirement for installing the extension; coworkers install with one click.
+* **Planned deliverables:**
+  * Publish extension as a private group listing (visible only to invited Google accounts).
+  * One-time $5 developer registration fee; 1–7 day review timeline.
+* **Verification Criteria (Definition of Done):**
+  * Extension installs in Chrome from the Web Store without enabling Developer mode.
+  * Existing scrape functionality is unchanged post-publish.
